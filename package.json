@@ -1,0 +1,16 @@
+{
+  "name": "neurowyld-printful-bot",
+  "version": "1.0.0",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "install-browsers": "npx playwright install chromium"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "playwright-extra": "^4.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "playwright": "^1.44.0",
+    "dotenv": "^16.4.5"
+  }
+}
