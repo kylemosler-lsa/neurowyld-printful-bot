@@ -99,7 +99,7 @@ async function isLoggedIn(page) {
     await page.goto('https://www.printful.com/dashboard', {
       waitUntil: 'domcontentloaded', timeout: STEP_MS
     });
-    const loggedIn = !page.url().includes('/login') && !page.url().includes('/signup');
+    const loggedIn = !page.url().includes('/auth/login') && !page.url().includes('/auth/signup') && !page.url().includes('/login');
     log(loggedIn ? 'Already logged in' : 'Not logged in — need to authenticate');
     return loggedIn;
   } catch (e) {
@@ -110,60 +110,31 @@ async function isLoggedIn(page) {
 
 async function login(page, context) {
   log('Logging in to Printful...');
-  await page.goto('https://www.printful.com/login', { waitUntil: 'networkidle', timeout: STEP_MS });
+  // Real login page — /login is a 404 as of 2026
+  await page.goto('https://www.printful.com/auth/login', { waitUntil: 'domcontentloaded', timeout: STEP_MS });
+  await page.waitForTimeout(2000);
   await shot(page, '01-login-page');
 
-  // Printful may show social login buttons first — click "Continue with email" to reveal the form
-  const emailOptionSelectors = [
-    'button:has-text("Continue with email")',
-    'button:has-text("Sign in with email")',
-    'button:has-text("Use email")',
-    'button:has-text("Email")',
-    'a:has-text("Continue with email")',
-    'a:has-text("Sign in with email")',
-    '[data-testid*="email"]:not(input)',
-    '[data-provider="email"]',
-  ];
-  for (const sel of emailOptionSelectors) {
-    try {
-      const el = page.locator(sel).first();
-      if (await el.isVisible({ timeout: 1500 })) {
-        log(`Clicking email option: ${sel}`);
-        await el.click();
-        await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
-        break;
-      }
-    } catch (_) {}
-  }
-  await shot(page, '01b-after-email-click');
-  log(`Page URL after email-click: ${page.url()}`);
-
-  // Fill email — broad selector set covering label, type, name, placeholder, autocomplete
-  const emailField = page.locator([
-    'input[type="email"]',
-    'input[name="email"]',
-    'input[name="username"]',
-    'input[id*="email" i]',
-    'input[placeholder*="email" i]',
-    'input[autocomplete="email"]',
-    'input[autocomplete="username"]',
-  ].join(', ')).first();
-  await emailField.waitFor({ state: 'visible', timeout: STEP_MS });
-  await emailField.fill(process.env.PRINTFUL_EMAIL);
-
-  // Password — try label first, then type selector
+  // Dismiss cookie consent banner if present
   try {
-    await page.getByLabel(/password/i).fill(process.env.PRINTFUL_PASSWORD);
-  } catch (_) {
-    await page.locator('input[type="password"]').first().fill(process.env.PRINTFUL_PASSWORD);
-  }
+    const acceptAll = page.locator('button:has-text("Accept all")').first();
+    if (await acceptAll.isVisible({ timeout: 3000 })) {
+      await acceptAll.click();
+      log('Dismissed cookie banner');
+      await page.waitForTimeout(500);
+    }
+  } catch (_) {}
+
+  // Fill email using the known stable selectors for this page
+  await page.locator('#login-email').waitFor({ state: 'visible', timeout: STEP_MS });
+  await page.locator('#login-email').fill(process.env.PRINTFUL_EMAIL);
+  await page.locator('#login-password').fill(process.env.PRINTFUL_PASSWORD);
   await shot(page, '02-login-filled');
 
-  // Submit — try "Log in", "Sign in", "Continue"
-  const submitBtn = page.getByRole('button', { name: /log in|sign in|continue/i }).first();
-  await submitBtn.click();
+  // Submit — the submit control is input[type="submit"], not a button
+  await page.locator('input[type="submit"]').click();
 
-  // Wait up to 45s for redirect — covers slow reCAPTCHA scoring
+  // Wait up to 45s for redirect to dashboard
   await page.waitForURL(/\/dashboard/, { timeout: 45_000 });
   await shot(page, '03-post-login');
   await saveSession(context);
