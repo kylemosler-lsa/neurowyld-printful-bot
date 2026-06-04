@@ -419,19 +419,57 @@ async function handleFileLibraryModal(page, localPath) {
   log(`File Library mode: ${hasTOS ? 'TOS-confirmation' : 'browser'}`);
 
   if (hasTOS) {
-    // TOS mode: check the checkbox, then "Save and close"
-    await page.evaluate(() => {
-      const cbs = [...document.querySelectorAll('input[type="checkbox"]')];
-      for (const cb of cbs) {
-        if (!cb.checked) { cb.checked = true; cb.dispatchEvent(new Event('change', { bubbles: true })); return; }
+    // Use Playwright's native check() — creates isTrusted:true events that React responds to.
+    // JS dispatchEvent('change') is untrusted; React ignores it and leaves the save button disabled.
+    try {
+      await page.locator('input[type="checkbox"]').first().check({ force: true, timeout: 5000 });
+      log('TOS checkbox checked (Playwright native)');
+    } catch (_) {
+      // React fiber setter fallback
+      await page.evaluate(() => {
+        const cbs = [...document.querySelectorAll('input[type="checkbox"]')];
+        for (const cb of cbs) {
+          if (!cb.checked) {
+            const s = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'checked').set;
+            s.call(cb, true);
+            cb.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+            return;
+          }
+        }
+      });
+      log('TOS checked via React-fiber setter');
+    }
+    await page.waitForTimeout(1500);
+
+    // Diagnostic: enumerate modal buttons so we know the exact label
+    try {
+      const btns = await page.locator('[role="dialog"] button, [class*="modal"] button, [class*="library"] button').all();
+      const lbls = [];
+      for (const b of btns) {
+        const t = await b.textContent().catch(() => '');
+        const v = await b.isVisible().catch(() => false);
+        if (t?.trim()) lbls.push(`"${t.trim()}"(v=${v})`);
       }
-    });
-    log('TOS checked via JS');
-    await page.waitForTimeout(500);
-    const saveBtn = page.locator('button').filter({ hasText: /save and close/i }).first();
-    if (await saveBtn.isVisible({ timeout: 10000 }).catch(() => false)) {
-      await saveBtn.click({ force: true });
+      log(`Modal buttons after TOS check: ${lbls.join(', ')}`);
+    } catch (_) {}
+
+    const saveBtn = page.getByRole('button', { name: /save.*close|save & close/i })
+      .or(page.locator('button').filter({ hasText: /save and close|save & close|save|apply|done/i }))
+      .first();
+    try {
+      await saveBtn.click({ force: true, timeout: 15000 });
       log('"Save and close" clicked');
+      await page.waitForTimeout(2000);
+    } catch (e) {
+      log(`Save button failed: ${e.message.split('\n')[0]}`);
+      // JS fallback: find any save/apply button
+      const clicked = await page.evaluate(() => {
+        const b = [...document.querySelectorAll('button')].find(b => /save|apply|done/i.test(b.textContent || ''));
+        if (b) { b.click(); return b.textContent?.trim(); }
+        return null;
+      });
+      if (clicked) log(`JS fallback clicked: "${clicked}"`);
+      await page.waitForTimeout(2000);
     }
   } else {
     // Apply button has data-testid="recentlyUsedFileApplyButton" inside pf-d-none parent.
@@ -522,32 +560,34 @@ async function triggerFileUpload(page, localPath) {
 async function selectColorSwatches(page, colorNames) {
   log(`Selecting colours: ${colorNames.join(', ')}`);
 
-  // Log available swatches for diagnosis
-  try {
-    const swatchEls = await page.locator('[title], [aria-label]').all();
-    const titles = new Set();
-    for (const el of swatchEls) {
-      const t = await el.getAttribute('title').catch(() => '') || await el.getAttribute('aria-label').catch(() => '');
-      if (t && t.length < 40) titles.add(t);
-    }
-    log(`Swatch titles/labels on page: ${[...titles].join(', ')}`);
-  } catch (_) {}
-
   for (const name of colorNames) {
     try {
-      // Printful titles include hex: "Athletic Heather #cececc" — use partial matching
-      const swatch = page.getByTitle(name, { exact: false })
-        .or(page.locator(`[aria-label*="${name}"]`))
+      // Skip if already selected — clicking a selected swatch would DESELECT it.
+      // Printful renders a "Remove variant <name>" element when a color is active.
+      const alreadySelected = await page.locator(
+        `[title*="Remove"][title*="${name}"], [aria-label*="Remove"][aria-label*="${name}"]`
+      ).isVisible({ timeout: 500 }).catch(() => false);
+      if (alreadySelected) {
+        log(`Swatch already selected: ${name}`);
+        continue;
+      }
+
+      // Target swatch buttons via "Color Name #hex" title format (e.g. "Athletic Heather #cececc").
+      // The ` #` suffix prevents matching nav elements or "Remove variant White".
+      const swatch = page.locator(`[title*="${name} #"]`)
+        .or(page.locator(`[aria-label="${name}"]`))
         .or(page.locator(`[data-color-name="${name}"]`))
         .first();
-      await swatch.click({ timeout: 4000 });
-      await page.waitForTimeout(250);
+
+      await swatch.scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
+      await swatch.click({ force: true, timeout: 4000 });
+      await page.waitForTimeout(200);
       log(`Clicked swatch: ${name}`);
-    } catch (_) {
-      log(`⚠️  Could not click swatch for: ${name}`);
+    } catch (e) {
+      log(`⚠️  Could not click swatch for: ${name} — ${e.message.split('\n')[0]}`);
     }
   }
-  await shot(page, `colours-selected`);
+  await shot(page, 'colours-selected');
 }
 
 async function configureDesigns(page, { blkFile, whtFile, lightColors, darkColors }) {
@@ -604,7 +644,7 @@ async function advanceThroughWizard(page, productTitle) {
 
     // Skip mockup selection if present — just continue with defaults
     try {
-      await continueBtn().click({ timeout: 8000 });
+      await continueBtn().click({ force: true, timeout: 8000 });
       await page.waitForLoadState('networkidle');
       await page.waitForTimeout(1500);
     } catch (_) {
@@ -632,11 +672,24 @@ async function submitToStore(page) {
   log('Submitting product to Shopify store...');
   await shot(page, '16-pre-submit');
 
-  const submitBtn = page.getByRole('button', {
-    name: /submit to store|add to store|sync to store|publish|save product/i
-  }).first();
+  // Diagnostic: log visible buttons so we know the exact submit label
+  try {
+    const btns = await page.locator('button:visible').all();
+    const lbls = [];
+    for (const b of btns) {
+      const t = await b.textContent().catch(() => '');
+      if (t?.trim()) lbls.push(`"${t.trim()}"`);
+    }
+    log(`Visible buttons: ${lbls.slice(0, 25).join(', ')}`);
+  } catch (_) {}
 
-  await submitBtn.click({ timeout: STEP_MS });
+  const submitBtn = page.getByRole('button', {
+    name: /submit.*store|sync.*store|add.*store|publish|save.*sync|save product/i
+  })
+    .or(page.locator('button').filter({ hasText: /submit.*store|sync.*store|add.*store|publish/i }))
+    .first();
+
+  await submitBtn.click({ force: true, timeout: STEP_MS });
   await page.waitForLoadState('networkidle');
   await page.waitForTimeout(3000);
   await shot(page, '17-post-submit');
