@@ -119,14 +119,19 @@ async function dismissCookieBanner(page) {
     const clicked = await page.evaluate(() => {
       const d = document.querySelector('dialog[data-id="cookiefirst-root"]');
       if (!d) return false;
-      const btn = [...d.querySelectorAll('button')].find(b =>
-        /accept all|accept|allow all|allow|agree/i.test(b.textContent.trim())
-      );
-      if (btn) { btn.click(); return true; }
-      return false;
+      const btns = [...d.querySelectorAll('button')];
+      // Accept / Continue / Got it — but not Reject / Preferences / Manage
+      const btn = btns.find(b => {
+        const t = b.textContent.trim().toLowerCase();
+        return /accept all|accept|allow all|allow|agree|continue to site|continue|got it|ok$/i.test(t)
+          && !/reject|decline|preferences|settings|manage/i.test(t);
+      }) || btns.find(b => !/reject|decline|preferences|settings|manage/i.test(b.textContent.trim().toLowerCase()));
+      if (btn) { btn.click(); return btn.textContent.trim(); }
+      return null;
     });
 
     if (clicked) {
+      log(`Clicked "${clicked}" via JS, waiting for banner to close...`);
       await dialog.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
     }
 
@@ -170,8 +175,13 @@ async function login(page, context) {
     await page.locator('input[type="submit"]').click({ force: true });
   }
 
+  // Brief pause then screenshot to capture post-submit state (CAPTCHA, error, etc.)
+  await page.waitForTimeout(3000);
+  await shot(page, '03-post-submit');
+  log(`Post-submit URL: ${page.url()}`);
+
   await page.waitForURL(/\/dashboard/, { timeout: 45_000 });
-  await shot(page, '03-post-login');
+  await shot(page, '04-post-login');
   await saveSession(context);
   log('Login successful');
 }
