@@ -113,33 +113,24 @@ async function dismissCookieBanner(page) {
     const dialog = page.locator('dialog[data-id="cookiefirst-root"]');
     const appeared = await dialog.isVisible({ timeout: 6000 }).catch(() => false);
     if (!appeared) return;
-    log('Cookie banner detected, dismissing via JS...');
+    log('Cookie banner detected, dismissing...');
 
-    // JS click bypasses the backdrop's pointer-events interception
-    const clicked = await page.evaluate(() => {
-      const d = document.querySelector('dialog[data-id="cookiefirst-root"]');
-      if (!d) return false;
-      const btns = [...d.querySelectorAll('button')];
-      // Accept / Continue / Got it — but not Reject / Preferences / Manage
-      const btn = btns.find(b => {
-        const t = b.textContent.trim().toLowerCase();
-        return /accept all|accept|allow all|allow|agree|continue to site|continue|got it|ok$/i.test(t)
-          && !/reject|decline|preferences|settings|manage/i.test(t);
-      }) || btns.find(b => !/reject|decline|preferences|settings|manage/i.test(b.textContent.trim().toLowerCase()));
-      if (btn) { btn.click(); return btn.textContent.trim(); }
-      return null;
-    });
-
-    if (clicked) {
-      log(`Clicked "${clicked}" via JS, waiting for banner to close...`);
+    // Use Playwright locator (pierces shadow DOM) + force:true to bypass backdrop
+    const acceptBtn = page.locator('button').filter({ hasText: /continue to site|accept all|accept|allow all|allow|agree|got it/i }).first();
+    const btnVisible = await acceptBtn.isVisible({ timeout: 3000 }).catch(() => false);
+    if (btnVisible) {
+      const label = await acceptBtn.innerText().catch(() => '?');
+      await acceptBtn.click({ force: true, timeout: 5000 });
+      log(`Clicked "${label.trim()}" (force), waiting for banner to close...`);
       await dialog.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
     }
 
-    // Nuclear fallback: remove from DOM
+    // Nuclear fallback: remove dialog + any lingering backdrop from DOM
     if (await dialog.isVisible({ timeout: 500 }).catch(() => false)) {
       log('Banner still present, removing from DOM...');
       await page.evaluate(() => {
         document.querySelector('dialog[data-id="cookiefirst-root"]')?.remove();
+        document.querySelectorAll('[data-testid="backdrop"]').forEach(el => el.remove());
       });
       await page.waitForTimeout(300);
     }
