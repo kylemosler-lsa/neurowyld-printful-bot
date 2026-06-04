@@ -434,34 +434,27 @@ async function handleFileLibraryModal(page, localPath) {
       log('"Save and close" clicked');
     }
   } else {
-    // Browser mode: click the "Apply" button that appears on recently-used file thumbnails
-    // data-testid="recentlyUsedFileApplyButton" overlays the img and intercepts pointer events
-    try {
+    // Browser mode: click the Apply button on the first recently-used file
+    // The button has data-testid="recentlyUsedFileApplyButton" but is inside a pf-d-none
+    // parent that Playwright considers not-visible — use force:true or JS click
+    const applied = await page.evaluate(() => {
+      const btn = document.querySelector('[data-testid="recentlyUsedFileApplyButton"]');
+      if (btn) { btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })); return true; }
+      return false;
+    });
+    if (applied) {
+      log('Clicked Apply button via JS');
+      await page.waitForTimeout(2000);
+    } else {
+      // Force-click fallback
       const applyBtn = page.locator('[data-testid="recentlyUsedFileApplyButton"]').first();
-      if (await applyBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
-        await applyBtn.click();
-        log('Clicked recentlyUsedFileApplyButton');
+      try {
+        await applyBtn.click({ force: true, timeout: 5000 });
+        log('Clicked Apply button (force)');
         await page.waitForTimeout(2000);
-      } else {
-        // Fallback: hover over first thumbnail to reveal Apply button, then click
-        const recentSection = page.locator('text="Recently used files"').locator('..');
-        const firstCard = recentSection.locator('img').first();
-        if (await firstCard.isVisible({ timeout: 3000 }).catch(() => false)) {
-          await firstCard.hover();
-          await page.waitForTimeout(300);
-          const hoveredApply = page.locator('[data-testid="recentlyUsedFileApplyButton"]').first();
-          if (await hoveredApply.isVisible({ timeout: 2000 }).catch(() => false)) {
-            await hoveredApply.click();
-            log('Clicked Apply button after hover');
-          } else {
-            await firstCard.click({ force: true });
-            log('Force-clicked thumbnail');
-          }
-          await page.waitForTimeout(2000);
-        }
+      } catch (e) {
+        log(`Apply button not found: ${e.message}`);
       }
-    } catch (e) {
-      log(`Apply click error: ${e.message}`);
     }
 
     // If modal still open after thumbnail click, close it
