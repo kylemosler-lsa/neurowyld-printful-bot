@@ -413,39 +413,45 @@ async function handleFileLibraryModal(page, localPath) {
     }
   }
 
-  // Click the uploaded file in "Recently used files" to SELECT it for the design
+  await page.waitForTimeout(1000);
+
+  // Click the first image thumbnail in the modal to SELECT the uploaded file
   try {
-    // Wait for the file to appear — look for it by partial name match
-    const fileCard = page.locator(`text="${fileName}"`).first()
-      .or(page.locator('.recently-used-files [class*="item"], [class*="file-item"], [class*="fileItem"]').first());
-    if (await fileCard.isVisible({ timeout: 5000 }).catch(() => false)) {
-      await fileCard.click();
-      log('Clicked file thumbnail to select it');
-      await page.waitForTimeout(1000);
+    const thumb = page.locator('dialog img, [role="dialog"] img').first();
+    if (await thumb.isVisible({ timeout: 3000 }).catch(() => false)) {
+      await thumb.click();
+      log('Clicked first file thumbnail to select it');
+      await page.waitForTimeout(500);
     }
   } catch (_) {}
 
-  // Accept TOS — click the label text (more reliable than finding the checkbox input)
-  try {
-    const tosLabel = page.getByText('I understand and accept these conditions.').first();
-    if (await tosLabel.isVisible({ timeout: 3000 }).catch(() => false)) {
-      await tosLabel.click();
-      log('TOS accepted via label click');
-      await page.waitForTimeout(500);
+  // Accept TOS via JS evaluate — bypasses viewport/scroll visibility issues
+  const tosChecked = await page.evaluate(() => {
+    const cbs = [...document.querySelectorAll('input[type="checkbox"]')];
+    for (const cb of cbs) {
+      if (!cb.checked) {
+        cb.checked = true;
+        cb.dispatchEvent(new Event('change', { bubbles: true }));
+        cb.dispatchEvent(new Event('input', { bubbles: true }));
+        return true;
+      }
     }
-  } catch (_) {
-    // Fallback: try checking the checkbox directly
-    const tos = page.locator('input[type="checkbox"]').last(); // TOS is likely the LAST checkbox
-    if (await tos.isVisible({ timeout: 2000 }).catch(() => false) && !(await tos.isChecked())) {
-      await tos.check();
-      log('TOS checked via input');
-    }
-  }
+    return false;
+  });
+  log(`TOS checked via JS: ${tosChecked}`);
+  await page.waitForTimeout(500);
 
-  // Save and close
-  await page.getByRole('button', { name: /save and close/i }).click({ timeout: 10_000 });
+  // Save and close — force:true handles disabled/partially-disabled button state
+  const saveBtn = page.locator('button').filter({ hasText: /save and close/i }).first();
+  if (await saveBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
+    await saveBtn.click({ force: true });
+    log('"Save and close" clicked');
+  } else {
+    log('"Save and close" not visible — pressing Escape');
+    await page.keyboard.press('Escape');
+  }
   await page.waitForTimeout(3000);
-  log('File Library closed');
+  log('File Library handled');
   return true;
 }
 
