@@ -570,8 +570,15 @@ async function createProduct({ title, blkUrl, whtUrl, activeColors }) {
     viewport: { width: 1440, height: 900 },
   });
 
-  // Block CookieFirst consent banner — it appears on every page and intercepts all clicks
-  await context.route('**/*cookiefirst*', route => route.abort());
+  // Nuke CookieFirst cookie banner on every page via MutationObserver injected before page scripts
+  await context.addInitScript(() => {
+    const kill = () => {
+      document.querySelectorAll('[data-id="cookiefirst-root"], .cookiefirst-root, [data-testid="rootContainer"]')
+        .forEach(el => el.remove());
+    };
+    new MutationObserver(kill).observe(document.documentElement, { childList: true, subtree: true });
+    kill();
+  });
 
   const page = await context.newPage();
 
