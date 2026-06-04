@@ -374,45 +374,81 @@ async function selectBC3001(page) {
 
 // ─── Design Lab — upload & colour configuration ───────────────────────────────
 
+async function handleFileLibraryModal(page, localPath) {
+  // Printful's Design Lab opens a "File library" modal instead of a native chooser.
+  // Flow: click Upload in modal → native chooser fires → file uploads →
+  //       check TOS checkbox → click "Save and close"
+  const modal = page.locator('text="File library"').first();
+  if (!(await modal.isVisible({ timeout: 5000 }).catch(() => false))) return false;
+
+  log('File Library modal detected');
+
+  // Click "Upload" button in the modal — this triggers a native file chooser
+  const [chooser] = await Promise.all([
+    page.waitForEvent('filechooser', { timeout: 20_000 }),
+    page.locator('button').filter({ hasText: /^upload$/i }).first().click()
+  ]);
+  await chooser.setFiles(localPath);
+  log(`File set: ${path.basename(localPath)}`);
+  await page.waitForTimeout(4000); // wait for upload to finish
+
+  // Accept TOS checkbox
+  const tos = page.locator('input[type="checkbox"]').first();
+  if (await tos.isVisible({ timeout: 3000 }).catch(() => false)) {
+    if (!(await tos.isChecked())) {
+      await tos.check();
+      log('TOS checkbox checked');
+    }
+  }
+
+  // Click "Save and close"
+  await page.getByRole('button', { name: /save and close/i }).click({ timeout: 10_000 });
+  await page.waitForTimeout(3000);
+  log('File Library closed');
+  return true;
+}
+
 async function triggerFileUpload(page, localPath) {
   log(`Uploading ${path.basename(localPath)}...`);
 
-  // Strategy A: intercept the browser file-chooser event
+  // If the File Library modal is already open (from a prior click), handle it directly
+  if (await handleFileLibraryModal(page, localPath)) return;
+
+  // Click the upload area / canvas to open the File Library modal
+  const triggers = [
+    page.getByText(/upload or drop your design here/i).first(),
+    page.getByRole('button', { name: /upload/i }).first(),
+    page.locator('[data-testid*="upload"]').first(),
+    page.locator('[class*="upload-btn"]').first(),
+    page.locator('[class*="canvas-area"]').first(),
+  ];
+  for (const t of triggers) {
+    try {
+      if (await t.isVisible({ timeout: 1500 })) {
+        await t.click();
+        await page.waitForTimeout(1000);
+        break;
+      }
+    } catch (_) {}
+  }
+
+  // Try File Library modal first (Printful's preferred path)
+  if (await handleFileLibraryModal(page, localPath)) return;
+
+  // Fallback: intercept native file chooser
   try {
     const [chooser] = await Promise.all([
       page.waitForEvent('filechooser', { timeout: 8000 }),
-      (async () => {
-        // Try buttons/areas that might open a file picker
-        const triggers = [
-          page.getByRole('button', { name: /upload/i }).first(),
-          page.locator('[data-testid*="upload"]').first(),
-          page.locator('[class*="upload-btn"]').first(),
-          page.locator('[class*="design-upload"]').first(),
-          page.locator('[class*="add-layer"]').first(),
-          page.locator('[class*="canvas-area"]').first(),
-        ];
-        for (const t of triggers) {
-          try {
-            if (await t.isVisible({ timeout: 1500 })) { await t.click(); return; }
-          } catch (_) {}
-        }
-        // Last resort: click the centre of the mockup canvas
-        const canvas = page.locator('[class*="mockup"], [class*="canvas"], [class*="preview"]').first();
-        await canvas.click({ timeout: 5000 });
-      })()
+      page.locator('input[type="file"]').first().evaluate(el => el.click())
     ]);
     await chooser.setFiles(localPath);
-    log('File set via file-chooser event');
+    log('File set via native file-chooser');
   } catch (_) {
-    // Strategy B: directly set the hidden <input type="file">
-    log('File-chooser timeout — falling back to direct input...');
-    const input = page.locator('input[type="file"]').first();
-    await input.setInputFiles(localPath);
-    log('File set via direct <input type="file">');
+    log('All upload strategies failed — trying direct input as last resort');
+    await page.locator('input[type="file"]').first().setInputFiles(localPath);
   }
 
-  // Wait for the upload + render cycle to settle
-  await page.waitForLoadState('networkidle', { timeout: 30_000 });
+  await page.waitForLoadState('networkidle', { timeout: 30_000 }).catch(() => {});
   await page.waitForTimeout(2000);
 }
 
