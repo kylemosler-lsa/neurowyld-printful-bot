@@ -57,7 +57,7 @@ function downloadFile(url, filename) {
     function get(u) {
       const mod = u.startsWith('https') ? https : http;
       mod.get(u, { headers: { 'User-Agent': 'Mozilla/5.0' } }, (res) => {
-        if (res.statusCode === 301 || res.statusCode === 302) {
+        if (res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 303) {
           return get(res.headers.location);
         }
         if (res.statusCode !== 200) {
