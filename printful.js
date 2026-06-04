@@ -225,71 +225,81 @@ async function dismissModals(page) {
 
 async function findStoreUrl(page) {
   log('Locating Neurowyld store in Printful dashboard...');
-  await shot(page, '04-dashboard');
 
-  // Navigate directly to the stores list — more reliable than clicking sidebar links
-  await page.goto('https://www.printful.com/dashboard/stores', {
+  // Go back to dashboard (we know this URL works)
+  await page.goto('https://www.printful.com/dashboard', {
     waitUntil: 'domcontentloaded', timeout: STEP_MS
   });
   await page.waitForTimeout(2000);
-  await shot(page, '05-stores-list');
+  await shot(page, '04-dashboard');
+  log(`Dashboard URL: ${page.url()}`);
 
-  // If Printful redirected straight to a store, grab it
-  const redirectMatch = page.url().match(/\/stores\/(\d+)/);
+  // Log ALL nav/sidebar links so we can see the real URL structure
+  const allLinks = await page.locator('a[href]').all();
+  for (const link of allLinks) {
+    const href = (await link.getAttribute('href').catch(() => '')) || '';
+    if (href.includes('store') || href.includes('Store') || href.includes('product')) {
+      const text = (await link.innerText().catch(() => '')).trim();
+      log(`  nav link: "${text}" → ${href}`);
+    }
+  }
+
+  // Click the "Stores" sidebar link — use whatever URL it actually points to
+  const storesNavLink = page.locator('a').filter({ hasText: /^stores$/i }).first();
+  if (await storesNavLink.isVisible({ timeout: 5000 }).catch(() => false)) {
+    const href = await storesNavLink.getAttribute('href').catch(() => null);
+    log(`Stores nav link href: ${href}`);
+    await storesNavLink.click();
+    await page.waitForLoadState('domcontentloaded');
+    await page.waitForTimeout(3000);
+  }
+
+  await shot(page, '05-stores-page');
+  const storesPageUrl = page.url();
+  log(`URL after clicking Stores: ${storesPageUrl}`);
+
+  // If URL contains a store ID already, we're done
+  const redirectMatch = storesPageUrl.match(/\/stores\/(\d+)/);
   if (redirectMatch) {
     log(`Store ID from redirect: ${redirectMatch[1]}`);
     return `https://www.printful.com/dashboard/stores/${redirectMatch[1]}`;
   }
 
-  // On the stores list page — find the Neurowyld / Shopify store link
-  const storeSlug = SHOPIFY_STORE.replace('.myshopify.com', '');
-  const storeLinks = await page.locator('a[href*="/stores/"]').all();
-  log(`Found ${storeLinks.length} store link(s)`);
-
-  for (const link of storeLinks) {
-    const text = (await link.innerText().catch(() => '')).toLowerCase();
+  // Look for store-specific links with a numeric ID
+  const storeIdLinks = await page.locator('a[href*="/stores/"]').all();
+  log(`Found ${storeIdLinks.length} /stores/ links`);
+  for (const link of storeIdLinks) {
     const href = (await link.getAttribute('href').catch(() => '')) || '';
-    log(`  store link: "${text}" → ${href}`);
-    if (text.includes('neurowyld') || text.includes(storeSlug) || text.includes('shopify')) {
-      const m = href.match(/\/stores\/(\d+)/);
-      if (m) { log(`Store ID: ${m[1]}`); return `https://www.printful.com/dashboard/stores/${m[1]}`; }
-    }
-  }
-
-  // Only one store? Use it.
-  if (storeLinks.length === 1) {
-    const href = (await storeLinks[0].getAttribute('href').catch(() => '')) || '';
+    const text = (await link.innerText().catch(() => '')).trim();
+    log(`  /stores/ link: "${text}" → ${href}`);
     const m = href.match(/\/stores\/(\d+)/);
-    if (m) { log(`Store ID (only store): ${m[1]}`); return `https://www.printful.com/dashboard/stores/${m[1]}`; }
+    if (m) { log(`Store ID: ${m[1]}`); return `https://www.printful.com${href.replace(/\/products.*/, '')}`; }
   }
 
-  // Last resort: scrape store ID from page source
-  const html = await page.content();
-  const idMatch = html.match(/"storeId"\s*:\s*(\d+)/) || html.match(/\/stores\/(\d+)/);
-  if (idMatch) {
-    log(`Store ID from page source: ${idMatch[1]}`);
-    return `https://www.printful.com/dashboard/stores/${idMatch[1]}`;
+  // If we navigated somewhere useful (has "store" or is a dashboard sub-page), use that URL
+  if (storesPageUrl !== 'https://www.printful.com/dashboard' && !storesPageUrl.includes('404')) {
+    log(`Using current URL as store base: ${storesPageUrl}`);
+    return storesPageUrl;
   }
 
-  await shot(page, '05-store-navigated');
-
-  const finalMatch = page.url().match(/\/stores\/(\d+)/);
-  if (!finalMatch) {
-    const err = new Error('Could not locate Neurowyld store. Check screenshots in /tmp/printful-screenshots/');
-    err.screenshotBase64 = await screenshotBase64(page);
-    throw err;
-  }
-  log(`Store ID: ${finalMatch[1]}`);
-  return `https://www.printful.com/dashboard/stores/${finalMatch[1]}`;
+  const err = new Error(`Could not locate Neurowyld store. URL: ${storesPageUrl}`);
+  err.screenshotBase64 = await screenshotBase64(page);
+  throw err;
 }
 
 // ─── Product catalog ──────────────────────────────────────────────────────────
 
 async function openAddProduct(page, storeUrl) {
   log('Navigating to Add Product...');
-  const productsUrl = storeUrl.replace(/\/$/, '') + '/products';
-  await page.goto(productsUrl, { waitUntil: 'networkidle', timeout: STEP_MS });
+  log(`Store URL: ${storeUrl}`);
+  // Try /products suffix first; if storeUrl already IS a products/store page, go there directly
+  const productsUrl = storeUrl.endsWith('/products')
+    ? storeUrl
+    : storeUrl.replace(/\/$/, '') + '/products';
+  await page.goto(productsUrl, { waitUntil: 'domcontentloaded', timeout: STEP_MS });
+  await page.waitForTimeout(2000);
   await shot(page, '06-products-page');
+  log(`Products page URL: ${page.url()}`);
 
   const addBtn = page.getByRole('button', { name: /add product/i })
     .or(page.getByRole('link', { name: /add product/i }))
