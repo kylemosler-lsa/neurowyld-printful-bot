@@ -5,6 +5,8 @@ WORKDIR /app
 
 COPY package*.json ./
 RUN npm install --omit=dev
+# Explicitly install the browsers matched to the npm playwright version
+RUN npx playwright install chromium --with-deps
 
 COPY . .
 
