@@ -381,39 +381,38 @@ async function handleFileLibraryModal(page, localPath) {
 
   const fileName = path.basename(localPath);
 
-  // Upload the file via the Upload button → filechooser
+  // Try filechooser via Upload button (short timeout)
+  let uploaded = false;
   try {
     const [chooser] = await Promise.all([
-      page.waitForEvent('filechooser', { timeout: 8000 }),
+      page.waitForEvent('filechooser', { timeout: 5000 }),
       page.locator('button').filter({ hasText: /upload/i }).first().click()
     ]);
     await chooser.setFiles(localPath);
     log(`Uploaded via filechooser: ${fileName}`);
-    await page.waitForTimeout(4000);
-  } catch (_) {
-    // Fallback: find the file input inside the Upload button area and set directly
-    log('Filechooser failed — trying Upload button area input');
-    try {
-      // Click Upload to reveal the file input, then set it
-      await page.locator('button').filter({ hasText: /upload/i }).first().click().catch(() => {});
-      await page.waitForTimeout(500);
-      // Find a file input that is NOT the main Design Lab dropzone input
-      // The modal's input should be accessible after the button click
-      const inputs = await page.locator('input[type="file"]').all();
-      log(`Found ${inputs.length} file input(s)`);
-      if (inputs.length > 0) {
-        await inputs[0].setInputFiles(localPath).catch(async () => {
-          if (inputs.length > 1) await inputs[1].setInputFiles(localPath);
-        });
-        log(`File set via direct input: ${fileName}`);
-        await page.waitForTimeout(3000);
+    uploaded = true;
+  } catch (_) {}
+
+  if (!uploaded) {
+    // DON'T click Upload again — it loads a slow integration panel that hides the modal buttons.
+    // Instead go directly to the file inputs that are already in the DOM.
+    const inputs = await page.locator('input[type="file"]').all();
+    log(`Direct input fallback: found ${inputs.length} input(s)`);
+    // Skip inputs[0] — that's the Design Lab dropzone which throws jQuery errors.
+    // Use inputs[1] (the modal's own file input) if available.
+    const target = inputs.length > 1 ? inputs[1] : inputs[0];
+    if (target) {
+      try {
+        await target.setInputFiles(localPath);
+        log(`File set via input[${inputs.length > 1 ? 1 : 0}]: ${fileName}`);
+        uploaded = true;
+      } catch (e) {
+        log(`Input set failed: ${e.message}`);
       }
-    } catch (e) {
-      log(`Upload fallback failed: ${e.message}`);
     }
   }
 
-  await page.waitForTimeout(1000);
+  await page.waitForTimeout(2000);
 
   // Click the first image thumbnail in the modal to SELECT the uploaded file
   try {
@@ -441,9 +440,9 @@ async function handleFileLibraryModal(page, localPath) {
   log(`TOS checked via JS: ${tosChecked}`);
   await page.waitForTimeout(500);
 
-  // Save and close — force:true handles disabled/partially-disabled button state
+  // Save and close — longer timeout in case upload is still processing
   const saveBtn = page.locator('button').filter({ hasText: /save and close/i }).first();
-  if (await saveBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
+  if (await saveBtn.isVisible({ timeout: 15000 }).catch(() => false)) {
     await saveBtn.click({ force: true });
     log('"Save and close" clicked');
   } else {
