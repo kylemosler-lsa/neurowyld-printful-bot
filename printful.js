@@ -472,23 +472,30 @@ async function handleFileLibraryModal(page, localPath) {
       await page.waitForTimeout(2000);
     }
   } else {
-    // Apply button has data-testid="recentlyUsedFileApplyButton" inside pf-d-none parent.
-    // Playwright isVisible() returns false, JS dispatchEvent is untrusted (React ignores it).
-    // Solution: force:true skips visibility checks and dispatches a TRUSTED native click.
-    const applyBtn = page.locator('[data-testid="recentlyUsedFileApplyButton"]').first();
-    try {
-      await applyBtn.click({ force: true, timeout: 5000 });
-      log('Clicked Apply button (force:true trusted)');
+    // Apply button is inside a hover-to-reveal container (pf-d-none parent).
+    // Playwright force:true cannot click zero-bounding-box elements.
+    // JS element.click() on <a href="javascript:"> fires the click handler even when display:none.
+    const jsApplied = await page.evaluate(() => {
+      const btn = document.querySelector('[data-testid="recentlyUsedFileApplyButton"]');
+      if (!btn) return false;
+      btn.click();
+      return true;
+    }).catch(() => false);
+
+    if (jsApplied) {
+      log('Clicked Apply button (JS direct)');
       await page.waitForTimeout(2000);
-    } catch (e) {
-      log(`Apply force click failed: ${e.message}`);
-      // Last resort: try the second Apply button if multiple exist
+    } else {
+      // Hover over file tile to reveal the button, then Playwright click
+      await page.locator('[data-testid="recentlyUsedFile"]').first()
+        .hover({ timeout: 2000 }).catch(() => {});
+      await page.waitForTimeout(300);
       const allApply = await page.locator('[data-testid="recentlyUsedFileApplyButton"]').all();
-      log(`Found ${allApply.length} Apply button(s)`);
+      log(`Found ${allApply.length} Apply button(s) after hover`);
       for (const btn of allApply) {
         try {
-          await btn.click({ force: true, timeout: 2000 });
-          log('Clicked Apply via iteration');
+          await btn.click({ timeout: 2000 });
+          log('Clicked Apply after hover');
           await page.waitForTimeout(2000);
           break;
         } catch (_) {}
@@ -572,13 +579,29 @@ async function selectColorSwatches(page, colorNames) {
         continue;
       }
 
-      // Target swatch buttons via "Color Name #hex" title format (e.g. "Athletic Heather #cececc").
-      // The ` #` suffix prevents matching nav elements or "Remove variant White".
+      // Swatches may be display:none until the panel fully renders.
+      // JS element.click() fires the click handler regardless of visibility.
+      const jsClicked = await page.evaluate((n) => {
+        const el =
+          document.querySelector(`[title*="${n} #"]`) ||
+          document.querySelector(`[aria-label="${n}"]`) ||
+          document.querySelector(`[data-color-name="${n}"]`);
+        if (!el) return false;
+        el.click();
+        return true;
+      }, name).catch(() => false);
+
+      if (jsClicked) {
+        await page.waitForTimeout(200);
+        log(`Clicked swatch: ${name} (JS)`);
+        continue;
+      }
+
+      // Playwright fallback for when swatch is actually visible
       const swatch = page.locator(`[title*="${name} #"]`)
         .or(page.locator(`[aria-label="${name}"]`))
         .or(page.locator(`[data-color-name="${name}"]`))
         .first();
-
       await swatch.scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
       await swatch.click({ force: true, timeout: 4000 });
       await page.waitForTimeout(200);
