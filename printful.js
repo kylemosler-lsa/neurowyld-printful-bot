@@ -234,40 +234,47 @@ async function findStoreUrl(page) {
   await shot(page, '04-dashboard');
   log(`Dashboard URL: ${page.url()}`);
 
-  // Dump ALL links on page for diagnosis
-  const allLinks = await page.locator('a[href]').all();
-  log(`Total links on dashboard: ${allLinks.length}`);
+  // Vue Router links have no href attr — use ALL <a> elements plus role=link
+  const allLinks = await page.locator('a, [role="link"]').all();
+  log(`Total links on dashboard (including no-href): ${allLinks.length}`);
   for (const link of allLinks) {
     const href = (await link.getAttribute('href').catch(() => '')) || '';
     const text = (await link.innerText().catch(() => '')).replace(/\s+/g, ' ').trim();
-    if (text || href) log(`  link: "${text}" → ${href}`);
+    log(`  link: "${text}" → "${href}"`);
   }
 
-  // Find the Stores link by iterating all links and checking text/href
-  let clickedHref = null;
+  // Click Stores by exact text match — SPA handles the route change
+  const beforeUrl = page.url();
+  let storesClicked = false;
   for (const link of allLinks) {
-    const href = (await link.getAttribute('href').catch(() => '')) || '';
     const text = (await link.innerText().catch(() => '')).replace(/\s+/g, ' ').trim().toLowerCase();
+    const href = (await link.getAttribute('href').catch(() => '')) || '';
     if (text === 'stores' || href.toLowerCase().includes('/stores')) {
-      log(`Clicking Stores link: "${text}" → ${href}`);
-      clickedHref = href;
-      // Navigate directly to avoid SPA click issues
-      const fullUrl = href.startsWith('http') ? href : `https://www.printful.com${href}`;
-      await page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: STEP_MS });
-      await page.waitForTimeout(3000);
+      log(`Clicking: "${text}" → "${href}"`);
+      await link.click();
+      storesClicked = true;
       break;
     }
   }
 
-  if (!clickedHref) {
-    // Last resort: try clicking by text
-    log('No stores link found by href — trying getByText');
+  if (!storesClicked) {
+    log('No Stores link found in enumeration — trying getByText fallback');
     try {
       await page.getByText('Stores').first().click({ timeout: 5000 });
-      await page.waitForTimeout(3000);
+      storesClicked = true;
     } catch (e) {
       log(`getByText Stores failed: ${e.message}`);
     }
+  }
+
+  // Wait for SPA route change (URL will change, no page reload)
+  if (storesClicked) {
+    try {
+      await page.waitForURL(url => url !== beforeUrl, { timeout: 10_000 });
+    } catch (_) {
+      log('URL did not change after Stores click');
+    }
+    await page.waitForTimeout(2000);
   }
 
   await shot(page, '05-stores-page');
