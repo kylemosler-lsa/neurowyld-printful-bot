@@ -569,6 +569,10 @@ async function createProduct({ title, blkUrl, whtUrl, activeColors }) {
     userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
     viewport: { width: 1440, height: 900 },
   });
+
+  // Block CookieFirst consent banner — it appears on every page and intercepts all clicks
+  await context.route('**/*cookiefirst*', route => route.abort());
+
   const page = await context.newPage();
 
   // Log every console error from the page
