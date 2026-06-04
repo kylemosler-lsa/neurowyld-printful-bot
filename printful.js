@@ -234,6 +234,33 @@ async function findStoreUrl(page) {
   await shot(page, '04-dashboard');
   log(`Dashboard URL: ${page.url()}`);
 
+  // Try to pull store ID directly from Printful's Vuex/window state
+  const storeIdFromState = await page.evaluate(() => {
+    try {
+      const app = document.querySelector('#app')?.__vue_app__ || document.querySelector('#app')?.__vue__;
+      const store = app?.config?.globalProperties?.$store || app?.$store;
+      const state = store?.state;
+      if (state) {
+        const id = state.activeStoreId || state.store?.id || state.stores?.[0]?.id
+          || state.user?.stores?.[0]?.id;
+        if (id) return id;
+      }
+    } catch (_) {}
+    // Fallback: look in localStorage / window globals
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const v = localStorage.getItem(localStorage.key(i));
+        const m = v && v.match(/"(?:storeId|store_id|id)"\s*:\s*(\d{5,})/);
+        if (m) return m[1];
+      }
+    } catch (_) {}
+    return null;
+  });
+  if (storeIdFromState) {
+    log(`Store ID from Vuex/localStorage: ${storeIdFromState}`);
+    return `https://www.printful.com/dashboard/stores/${storeIdFromState}`;
+  }
+
   // Vue Router links have no href attr — use ALL <a> elements plus role=link
   const allLinks = await page.locator('a, [role="link"]').all();
   log(`Total links on dashboard (including no-href): ${allLinks.length}`);

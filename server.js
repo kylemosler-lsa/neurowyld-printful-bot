@@ -10,6 +10,24 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json({ limit: '10mb' }));
 
 let busy = false;
+const logBuffer = [];
+const MAX_LOG = 500;
+const origLog = console.log.bind(console);
+const origErr = console.error.bind(console);
+function captureLog(...args) {
+  const line = args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
+  logBuffer.push(`${new Date().toISOString()} ${line}`);
+  if (logBuffer.length > MAX_LOG) logBuffer.shift();
+  origLog(...args);
+}
+function captureErr(...args) {
+  const line = args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
+  logBuffer.push(`${new Date().toISOString()} [ERR] ${line}`);
+  if (logBuffer.length > MAX_LOG) logBuffer.shift();
+  origErr(...args);
+}
+console.log = captureLog;
+console.error = captureErr;
 
 // ------------------------------------------------------------------
 // Auth middleware
@@ -44,6 +62,10 @@ app.get('/screenshots/latest', requireAuth, (_req, res) => {
       return { name: f, base64: data.toString('base64') };
     });
   res.json({ files });
+});
+
+app.get('/logs', requireAuth, (_req, res) => {
+  res.json({ lines: logBuffer.slice(-200) });
 });
 
 app.get('/health', (_req, res) => {
