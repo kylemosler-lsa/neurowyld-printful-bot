@@ -434,26 +434,26 @@ async function handleFileLibraryModal(page, localPath) {
       log('"Save and close" clicked');
     }
   } else {
-    // Browser mode: click the Apply button on the first recently-used file
-    // The button has data-testid="recentlyUsedFileApplyButton" but is inside a pf-d-none
-    // parent that Playwright considers not-visible — use force:true or JS click
-    const applied = await page.evaluate(() => {
-      const btn = document.querySelector('[data-testid="recentlyUsedFileApplyButton"]');
-      if (btn) { btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })); return true; }
-      return false;
-    });
-    if (applied) {
-      log('Clicked Apply button via JS');
+    // Apply button has data-testid="recentlyUsedFileApplyButton" inside pf-d-none parent.
+    // Playwright isVisible() returns false, JS dispatchEvent is untrusted (React ignores it).
+    // Solution: force:true skips visibility checks and dispatches a TRUSTED native click.
+    const applyBtn = page.locator('[data-testid="recentlyUsedFileApplyButton"]').first();
+    try {
+      await applyBtn.click({ force: true, timeout: 5000 });
+      log('Clicked Apply button (force:true trusted)');
       await page.waitForTimeout(2000);
-    } else {
-      // Force-click fallback
-      const applyBtn = page.locator('[data-testid="recentlyUsedFileApplyButton"]').first();
-      try {
-        await applyBtn.click({ force: true, timeout: 5000 });
-        log('Clicked Apply button (force)');
-        await page.waitForTimeout(2000);
-      } catch (e) {
-        log(`Apply button not found: ${e.message}`);
+    } catch (e) {
+      log(`Apply force click failed: ${e.message}`);
+      // Last resort: try the second Apply button if multiple exist
+      const allApply = await page.locator('[data-testid="recentlyUsedFileApplyButton"]').all();
+      log(`Found ${allApply.length} Apply button(s)`);
+      for (const btn of allApply) {
+        try {
+          await btn.click({ force: true, timeout: 2000 });
+          log('Clicked Apply via iteration');
+          await page.waitForTimeout(2000);
+          break;
+        } catch (_) {}
       }
     }
 
