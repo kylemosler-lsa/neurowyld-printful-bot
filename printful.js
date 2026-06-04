@@ -113,8 +113,34 @@ async function login(page, context) {
   await page.goto('https://www.printful.com/login', { waitUntil: 'networkidle', timeout: STEP_MS });
   await shot(page, '01-login-page');
 
-  // Email
-  await page.getByLabel(/email/i).fill(process.env.PRINTFUL_EMAIL);
+  // Printful shows social login buttons first — click "Continue with email" to reveal the form
+  const emailOptionSelectors = [
+    'button:has-text("Continue with email")',
+    'button:has-text("Sign in with email")',
+    'button:has-text("Use email")',
+    'a:has-text("Continue with email")',
+    'a:has-text("Sign in with email")',
+    '[data-testid*="email"]:not(input)',
+  ];
+  for (const sel of emailOptionSelectors) {
+    try {
+      const el = page.locator(sel).first();
+      if (await el.isVisible({ timeout: 2000 })) {
+        await el.click();
+        log(`Clicked email option: ${sel}`);
+        await page.waitForTimeout(800);
+        break;
+      }
+    } catch (_) {}
+  }
+  await shot(page, '01b-after-email-click');
+
+  // Fill email — try label, placeholder, then input[type=email]
+  const emailField = page.getByLabel(/email/i).or(
+    page.locator('input[type="email"]')
+  ).first();
+  await emailField.waitFor({ timeout: STEP_MS });
+  await emailField.fill(process.env.PRINTFUL_EMAIL);
 
   // Password — try label first, then type selector
   try {
@@ -124,10 +150,12 @@ async function login(page, context) {
   }
   await shot(page, '02-login-filled');
 
-  await page.getByRole('button', { name: /log in/i }).click();
+  // Submit — try "Log in", "Sign in", "Continue"
+  const submitBtn = page.getByRole('button', { name: /log in|sign in|continue/i }).first();
+  await submitBtn.click();
 
-  // Wait up to 30s for redirect — covers slow reCAPTCHA scoring
-  await page.waitForURL(/\/dashboard/, { timeout: 30_000 });
+  // Wait up to 45s for redirect — covers slow reCAPTCHA scoring
+  await page.waitForURL(/\/dashboard/, { timeout: 45_000 });
   await shot(page, '03-post-login');
   await saveSession(context);
   log('Login successful');
