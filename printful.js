@@ -379,43 +379,67 @@ async function handleFileLibraryModal(page, localPath) {
   if (!(await modal.isVisible({ timeout: 5000 }).catch(() => false))) return false;
   log('File Library modal detected');
 
-  // Strategy 1: find hidden input[type="file"] and set files directly (most reliable)
-  const fileInput = page.locator('input[type="file"]').first();
-  if (await fileInput.count() > 0) {
-    await fileInput.setInputFiles(localPath);
-    log(`File set via direct input: ${path.basename(localPath)}`);
-  } else {
-    // Strategy 2: click Upload button, then wait for filechooser OR revealed input
-    const uploadBtn = page.locator('button').filter({ hasText: /upload/i }).first();
-    let uploaded = false;
-    try {
-      const [chooser] = await Promise.all([
-        page.waitForEvent('filechooser', { timeout: 8000 }),
-        uploadBtn.click().catch(() => {})
-      ]);
-      await chooser.setFiles(localPath);
-      log(`File set via filechooser: ${path.basename(localPath)}`);
-      uploaded = true;
-    } catch (_) {}
+  const fileName = path.basename(localPath);
 
-    if (!uploaded) {
-      // Button revealed a file input — try setting it now
-      await page.waitForTimeout(1000);
-      const revealedInput = page.locator('input[type="file"]').first();
-      if (await revealedInput.count() > 0) {
-        await revealedInput.setInputFiles(localPath);
-        log(`File set via revealed input: ${path.basename(localPath)}`);
+  // Upload the file via the Upload button → filechooser
+  try {
+    const [chooser] = await Promise.all([
+      page.waitForEvent('filechooser', { timeout: 8000 }),
+      page.locator('button').filter({ hasText: /upload/i }).first().click()
+    ]);
+    await chooser.setFiles(localPath);
+    log(`Uploaded via filechooser: ${fileName}`);
+    await page.waitForTimeout(4000);
+  } catch (_) {
+    // Fallback: find the file input inside the Upload button area and set directly
+    log('Filechooser failed — trying Upload button area input');
+    try {
+      // Click Upload to reveal the file input, then set it
+      await page.locator('button').filter({ hasText: /upload/i }).first().click().catch(() => {});
+      await page.waitForTimeout(500);
+      // Find a file input that is NOT the main Design Lab dropzone input
+      // The modal's input should be accessible after the button click
+      const inputs = await page.locator('input[type="file"]').all();
+      log(`Found ${inputs.length} file input(s)`);
+      if (inputs.length > 0) {
+        await inputs[0].setInputFiles(localPath).catch(async () => {
+          if (inputs.length > 1) await inputs[1].setInputFiles(localPath);
+        });
+        log(`File set via direct input: ${fileName}`);
+        await page.waitForTimeout(3000);
       }
+    } catch (e) {
+      log(`Upload fallback failed: ${e.message}`);
     }
   }
 
-  await page.waitForTimeout(4000); // wait for upload processing
+  // Click the uploaded file in "Recently used files" to SELECT it for the design
+  try {
+    // Wait for the file to appear — look for it by partial name match
+    const fileCard = page.locator(`text="${fileName}"`).first()
+      .or(page.locator('.recently-used-files [class*="item"], [class*="file-item"], [class*="fileItem"]').first());
+    if (await fileCard.isVisible({ timeout: 5000 }).catch(() => false)) {
+      await fileCard.click();
+      log('Clicked file thumbnail to select it');
+      await page.waitForTimeout(1000);
+    }
+  } catch (_) {}
 
-  // Accept TOS checkbox
-  const tos = page.locator('input[type="checkbox"]').first();
-  if (await tos.isVisible({ timeout: 3000 }).catch(() => false) && !(await tos.isChecked())) {
-    await tos.check();
-    log('TOS checkbox checked');
+  // Accept TOS — click the label text (more reliable than finding the checkbox input)
+  try {
+    const tosLabel = page.getByText('I understand and accept these conditions.').first();
+    if (await tosLabel.isVisible({ timeout: 3000 }).catch(() => false)) {
+      await tosLabel.click();
+      log('TOS accepted via label click');
+      await page.waitForTimeout(500);
+    }
+  } catch (_) {
+    // Fallback: try checking the checkbox directly
+    const tos = page.locator('input[type="checkbox"]').last(); // TOS is likely the LAST checkbox
+    if (await tos.isVisible({ timeout: 2000 }).catch(() => false) && !(await tos.isChecked())) {
+      await tos.check();
+      log('TOS checked via input');
+    }
   }
 
   // Save and close
@@ -485,8 +509,9 @@ async function selectColorSwatches(page, colorNames) {
 
   for (const name of colorNames) {
     try {
-      const swatch = page.getByTitle(name)
-        .or(page.locator(`[aria-label="${name}"]`))
+      // Printful titles include hex: "Athletic Heather #cececc" — use partial matching
+      const swatch = page.getByTitle(name, { exact: false })
+        .or(page.locator(`[aria-label*="${name}"]`))
         .or(page.locator(`[data-color-name="${name}"]`))
         .first();
       await swatch.click({ timeout: 4000 });
