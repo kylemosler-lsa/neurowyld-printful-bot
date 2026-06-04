@@ -375,33 +375,50 @@ async function selectBC3001(page) {
 // ─── Design Lab — upload & colour configuration ───────────────────────────────
 
 async function handleFileLibraryModal(page, localPath) {
-  // Printful's Design Lab opens a "File library" modal instead of a native chooser.
-  // Flow: click Upload in modal → native chooser fires → file uploads →
-  //       check TOS checkbox → click "Save and close"
   const modal = page.locator('text="File library"').first();
   if (!(await modal.isVisible({ timeout: 5000 }).catch(() => false))) return false;
-
   log('File Library modal detected');
 
-  // Click "Upload" button in the modal — this triggers a native file chooser
-  const [chooser] = await Promise.all([
-    page.waitForEvent('filechooser', { timeout: 20_000 }),
-    page.locator('button').filter({ hasText: /^upload$/i }).first().click()
-  ]);
-  await chooser.setFiles(localPath);
-  log(`File set: ${path.basename(localPath)}`);
-  await page.waitForTimeout(4000); // wait for upload to finish
+  // Strategy 1: find hidden input[type="file"] and set files directly (most reliable)
+  const fileInput = page.locator('input[type="file"]').first();
+  if (await fileInput.count() > 0) {
+    await fileInput.setInputFiles(localPath);
+    log(`File set via direct input: ${path.basename(localPath)}`);
+  } else {
+    // Strategy 2: click Upload button, then wait for filechooser OR revealed input
+    const uploadBtn = page.locator('button').filter({ hasText: /upload/i }).first();
+    let uploaded = false;
+    try {
+      const [chooser] = await Promise.all([
+        page.waitForEvent('filechooser', { timeout: 8000 }),
+        uploadBtn.click().catch(() => {})
+      ]);
+      await chooser.setFiles(localPath);
+      log(`File set via filechooser: ${path.basename(localPath)}`);
+      uploaded = true;
+    } catch (_) {}
 
-  // Accept TOS checkbox
-  const tos = page.locator('input[type="checkbox"]').first();
-  if (await tos.isVisible({ timeout: 3000 }).catch(() => false)) {
-    if (!(await tos.isChecked())) {
-      await tos.check();
-      log('TOS checkbox checked');
+    if (!uploaded) {
+      // Button revealed a file input — try setting it now
+      await page.waitForTimeout(1000);
+      const revealedInput = page.locator('input[type="file"]').first();
+      if (await revealedInput.count() > 0) {
+        await revealedInput.setInputFiles(localPath);
+        log(`File set via revealed input: ${path.basename(localPath)}`);
+      }
     }
   }
 
-  // Click "Save and close"
+  await page.waitForTimeout(4000); // wait for upload processing
+
+  // Accept TOS checkbox
+  const tos = page.locator('input[type="checkbox"]').first();
+  if (await tos.isVisible({ timeout: 3000 }).catch(() => false) && !(await tos.isChecked())) {
+    await tos.check();
+    log('TOS checkbox checked');
+  }
+
+  // Save and close
   await page.getByRole('button', { name: /save and close/i }).click({ timeout: 10_000 });
   await page.waitForTimeout(3000);
   log('File Library closed');
@@ -454,16 +471,27 @@ async function triggerFileUpload(page, localPath) {
 
 async function selectColorSwatches(page, colorNames) {
   log(`Selecting colours: ${colorNames.join(', ')}`);
+
+  // Log available swatches for diagnosis
+  try {
+    const swatchEls = await page.locator('[title], [aria-label]').all();
+    const titles = new Set();
+    for (const el of swatchEls) {
+      const t = await el.getAttribute('title').catch(() => '') || await el.getAttribute('aria-label').catch(() => '');
+      if (t && t.length < 40) titles.add(t);
+    }
+    log(`Swatch titles/labels on page: ${[...titles].join(', ')}`);
+  } catch (_) {}
+
   for (const name of colorNames) {
     try {
-      // Printful colour swatches have title / aria-label / data attribute with the colour name
       const swatch = page.getByTitle(name)
         .or(page.locator(`[aria-label="${name}"]`))
         .or(page.locator(`[data-color-name="${name}"]`))
-        .or(page.locator(`[title="${name}"]`))
         .first();
       await swatch.click({ timeout: 4000 });
       await page.waitForTimeout(250);
+      log(`Clicked swatch: ${name}`);
     } catch (_) {
       log(`⚠️  Could not click swatch for: ${name}`);
     }
