@@ -115,22 +115,52 @@ async function dismissCookieBanner(page) {
     if (!appeared) return;
     log('Cookie banner detected, dismissing...');
 
-    // Use Playwright locator (pierces shadow DOM) + force:true to bypass backdrop
-    const acceptBtn = page.locator('button').filter({ hasText: /continue to site|accept all|accept|allow all|allow|agree|got it/i }).first();
-    const btnVisible = await acceptBtn.isVisible({ timeout: 3000 }).catch(() => false);
-    if (btnVisible) {
-      const label = await acceptBtn.innerText().catch(() => '?');
-      await acceptBtn.click({ force: true, timeout: 5000 });
-      log(`Clicked "${label.trim()}" (force), waiting for banner to close...`);
+    // Strategy 1: shadow root traversal via JS (CookieFirst uses shadow DOM)
+    const clicked = await page.evaluate(() => {
+      const host = document.querySelector('[data-id="cookiefirst-root"]');
+      if (!host) return null;
+      const roots = [host.shadowRoot, host];
+      for (const root of roots) {
+        if (!root) continue;
+        const btns = [...root.querySelectorAll('button')];
+        const btn = btns.find(b => {
+          const t = (b.textContent || b.innerText || '').trim();
+          return /continue|accept|allow|agree|got it/i.test(t)
+            && !/reject|decline|preferences|settings|manage/i.test(t);
+        });
+        if (btn) {
+          btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+          return btn.textContent.trim();
+        }
+      }
+      return null;
+    });
+    if (clicked) {
+      log(`Shadow-root click: "${clicked}", waiting for banner...`);
       await dialog.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
     }
 
-    // Nuclear fallback: remove dialog + any lingering backdrop from DOM
+    // Strategy 2: Escape key
     if (await dialog.isVisible({ timeout: 500 }).catch(() => false)) {
-      log('Banner still present, removing from DOM...');
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(500);
+    }
+
+    // Strategy 3: Playwright locator force-click
+    if (await dialog.isVisible({ timeout: 500 }).catch(() => false)) {
+      const btn = page.locator('button').filter({ hasText: /continue to site|accept|allow|agree/i }).first();
+      if (await btn.isVisible({ timeout: 1000 }).catch(() => false)) {
+        await btn.click({ force: true, timeout: 5000 }).catch(() => {});
+        await dialog.waitFor({ state: 'hidden', timeout: 3000 }).catch(() => {});
+      }
+    }
+
+    // Strategy 4: nuclear DOM removal
+    if (await dialog.isVisible({ timeout: 500 }).catch(() => false)) {
+      log('Nuclear: removing banner from DOM...');
       await page.evaluate(() => {
-        document.querySelector('dialog[data-id="cookiefirst-root"]')?.remove();
-        document.querySelectorAll('[data-testid="backdrop"]').forEach(el => el.remove());
+        ['[data-id="cookiefirst-root"]', '[data-testid="backdrop"]', '.cookiefirst-root']
+          .forEach(sel => document.querySelectorAll(sel).forEach(el => el.remove()));
       });
       await page.waitForTimeout(300);
     }
@@ -158,13 +188,9 @@ async function login(page, context) {
   // Dismiss again in case banner reappeared while filling
   await dismissCookieBanner(page);
 
-  // Submit — use force:true as fallback if any overlay still lingers
-  try {
-    await page.locator('input[type="submit"]').click({ timeout: 10_000 });
-  } catch (_) {
-    log('Normal submit click failed, trying force click...');
-    await page.locator('input[type="submit"]').click({ force: true });
-  }
+  // Submit via keyboard Enter — bypasses any overlay pointer-events interception
+  log('Submitting via Enter key on password field...');
+  await page.locator('#login-password').press('Enter');
 
   // Brief pause then screenshot to capture post-submit state (CAPTCHA, error, etc.)
   await page.waitForTimeout(3000);
