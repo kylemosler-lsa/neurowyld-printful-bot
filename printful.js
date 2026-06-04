@@ -414,42 +414,62 @@ async function handleFileLibraryModal(page, localPath) {
 
   await page.waitForTimeout(2000);
 
-  // Click the first image thumbnail in the modal to SELECT the uploaded file
-  try {
-    const thumb = page.locator('dialog img, [role="dialog"] img').first();
-    if (await thumb.isVisible({ timeout: 3000 }).catch(() => false)) {
-      await thumb.click();
-      log('Clicked first file thumbnail to select it');
-      await page.waitForTimeout(500);
-    }
-  } catch (_) {}
+  // Detect modal mode: TOS confirmation vs plain file browser
+  const hasTOS = await page.getByText('I understand and accept').isVisible({ timeout: 1000 }).catch(() => false);
+  log(`File Library mode: ${hasTOS ? 'TOS-confirmation' : 'browser'}`);
 
-  // Accept TOS via JS evaluate — bypasses viewport/scroll visibility issues
-  const tosChecked = await page.evaluate(() => {
-    const cbs = [...document.querySelectorAll('input[type="checkbox"]')];
-    for (const cb of cbs) {
-      if (!cb.checked) {
-        cb.checked = true;
-        cb.dispatchEvent(new Event('change', { bubbles: true }));
-        cb.dispatchEvent(new Event('input', { bubbles: true }));
-        return true;
+  if (hasTOS) {
+    // TOS mode: check the checkbox, then "Save and close"
+    await page.evaluate(() => {
+      const cbs = [...document.querySelectorAll('input[type="checkbox"]')];
+      for (const cb of cbs) {
+        if (!cb.checked) { cb.checked = true; cb.dispatchEvent(new Event('change', { bubbles: true })); return; }
       }
+    });
+    log('TOS checked via JS');
+    await page.waitForTimeout(500);
+    const saveBtn = page.locator('button').filter({ hasText: /save and close/i }).first();
+    if (await saveBtn.isVisible({ timeout: 10000 }).catch(() => false)) {
+      await saveBtn.click({ force: true });
+      log('"Save and close" clicked');
     }
-    return false;
-  });
-  log(`TOS checked via JS: ${tosChecked}`);
-  await page.waitForTimeout(500);
-
-  // Save and close — longer timeout in case upload is still processing
-  const saveBtn = page.locator('button').filter({ hasText: /save and close/i }).first();
-  if (await saveBtn.isVisible({ timeout: 15000 }).catch(() => false)) {
-    await saveBtn.click({ force: true });
-    log('"Save and close" clicked');
   } else {
-    log('"Save and close" not visible — pressing Escape');
-    await page.keyboard.press('Escape');
+    // Browser mode: click first thumbnail in "Recently used files" to SELECT/apply the file
+    // Anchor from the section heading — avoids dialog vs div selector issues
+    try {
+      const recentSection = page.locator('text="Recently used files"').locator('..');
+      const firstImg = recentSection.locator('img').first();
+      if (await firstImg.isVisible({ timeout: 5000 }).catch(() => false)) {
+        await firstImg.click();
+        log('Clicked first file in Recently used files');
+        await page.waitForTimeout(2000);
+      } else {
+        log('No recently-used img found — clicking any visible img');
+        const anyImg = page.locator('img').filter({ hasNOT: page.locator('[class*="nav"], [class*="header"], [class*="logo"]') }).first();
+        if (await anyImg.isVisible({ timeout: 3000 }).catch(() => false)) {
+          await anyImg.click();
+          log('Clicked fallback img');
+          await page.waitForTimeout(2000);
+        }
+      }
+    } catch (e) {
+      log(`Thumbnail click error: ${e.message}`);
+    }
+
+    // If modal still open after thumbnail click, close it
+    if (await modal.isVisible({ timeout: 1000 }).catch(() => false)) {
+      log('Modal still open — closing via X');
+      const closeX = page.locator('button[aria-label*="lose"], button[title*="lose"]').first();
+      if (await closeX.isVisible({ timeout: 2000 }).catch(() => false)) {
+        await closeX.click();
+      } else {
+        await page.keyboard.press('Escape');
+      }
+      await page.waitForTimeout(1000);
+    }
   }
-  await page.waitForTimeout(3000);
+
+  await page.waitForTimeout(2000);
   log('File Library handled');
   return true;
 }
