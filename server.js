@@ -29,6 +29,23 @@ function requireAuth(req, res, next) {
 // ------------------------------------------------------------------
 // Routes
 // ------------------------------------------------------------------
+
+// Returns the most recent screenshot from the bot's run (for debugging login issues)
+app.get('/screenshots/latest', requireAuth, (_req, res) => {
+  const dir = require('path').join(require('os').tmpdir(), 'printful-screenshots');
+  const fs = require('fs');
+  if (!fs.existsSync(dir)) return res.json({ files: [] });
+  const files = fs.readdirSync(dir)
+    .filter(f => f.endsWith('.png'))
+    .sort()
+    .slice(-5)
+    .map(f => {
+      const data = fs.readFileSync(require('path').join(dir, f));
+      return { name: f, base64: data.toString('base64') };
+    });
+  res.json({ files });
+});
+
 app.get('/health', (_req, res) => {
   res.json({
     status: 'ok',

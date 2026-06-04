@@ -113,33 +113,42 @@ async function login(page, context) {
   await page.goto('https://www.printful.com/login', { waitUntil: 'networkidle', timeout: STEP_MS });
   await shot(page, '01-login-page');
 
-  // Printful shows social login buttons first — click "Continue with email" to reveal the form
+  // Printful may show social login buttons first — click "Continue with email" to reveal the form
   const emailOptionSelectors = [
     'button:has-text("Continue with email")',
     'button:has-text("Sign in with email")',
     'button:has-text("Use email")',
+    'button:has-text("Email")',
     'a:has-text("Continue with email")',
     'a:has-text("Sign in with email")',
     '[data-testid*="email"]:not(input)',
+    '[data-provider="email"]',
   ];
   for (const sel of emailOptionSelectors) {
     try {
       const el = page.locator(sel).first();
-      if (await el.isVisible({ timeout: 2000 })) {
+      if (await el.isVisible({ timeout: 1500 })) {
+        log(`Clicking email option: ${sel}`);
         await el.click();
-        log(`Clicked email option: ${sel}`);
-        await page.waitForTimeout(800);
+        await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
         break;
       }
     } catch (_) {}
   }
   await shot(page, '01b-after-email-click');
+  log(`Page URL after email-click: ${page.url()}`);
 
-  // Fill email — try label, placeholder, then input[type=email]
-  const emailField = page.getByLabel(/email/i).or(
-    page.locator('input[type="email"]')
-  ).first();
-  await emailField.waitFor({ timeout: STEP_MS });
+  // Fill email — broad selector set covering label, type, name, placeholder, autocomplete
+  const emailField = page.locator([
+    'input[type="email"]',
+    'input[name="email"]',
+    'input[name="username"]',
+    'input[id*="email" i]',
+    'input[placeholder*="email" i]',
+    'input[autocomplete="email"]',
+    'input[autocomplete="username"]',
+  ].join(', ')).first();
+  await emailField.waitFor({ state: 'visible', timeout: STEP_MS });
   await emailField.fill(process.env.PRINTFUL_EMAIL);
 
   // Password — try label first, then type selector
