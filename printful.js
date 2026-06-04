@@ -227,43 +227,49 @@ async function findStoreUrl(page) {
   log('Locating Neurowyld store in Printful dashboard...');
   await shot(page, '04-dashboard');
 
-  // If URL already contains a store ID, we're done
-  const urlMatch = page.url().match(/\/stores\/(\d+)/);
-  if (urlMatch) {
-    log(`Store ID from URL: ${urlMatch[1]}`);
-    return `https://www.printful.com/dashboard/stores/${urlMatch[1]}`;
+  // Navigate directly to the stores list — more reliable than clicking sidebar links
+  await page.goto('https://www.printful.com/dashboard/stores', {
+    waitUntil: 'domcontentloaded', timeout: STEP_MS
+  });
+  await page.waitForTimeout(2000);
+  await shot(page, '05-stores-list');
+
+  // If Printful redirected straight to a store, grab it
+  const redirectMatch = page.url().match(/\/stores\/(\d+)/);
+  if (redirectMatch) {
+    log(`Store ID from redirect: ${redirectMatch[1]}`);
+    return `https://www.printful.com/dashboard/stores/${redirectMatch[1]}`;
   }
 
+  // On the stores list page — find the Neurowyld / Shopify store link
   const storeSlug = SHOPIFY_STORE.replace('.myshopify.com', '');
+  const storeLinks = await page.locator('a[href*="/stores/"]').all();
+  log(`Found ${storeLinks.length} store link(s)`);
 
-  // Try: store switcher dropdown in the header/sidebar
-  try {
-    const switcher = page.locator('[data-testid="store-switcher"], [class*="store-switcher"], [class*="StoreSwitcher"]').first();
-    if (await switcher.isVisible({ timeout: 3000 })) {
-      await switcher.click();
-      await page.waitForTimeout(600);
-      const option = page.locator(`text="${SHOPIFY_STORE}"`).or(page.locator(`text="${storeSlug}"`)).first();
-      if (await option.isVisible({ timeout: 3000 })) {
-        await option.click();
-        await page.waitForLoadState('networkidle');
-      }
+  for (const link of storeLinks) {
+    const text = (await link.innerText().catch(() => '')).toLowerCase();
+    const href = (await link.getAttribute('href').catch(() => '')) || '';
+    log(`  store link: "${text}" → ${href}`);
+    if (text.includes('neurowyld') || text.includes(storeSlug) || text.includes('shopify')) {
+      const m = href.match(/\/stores\/(\d+)/);
+      if (m) { log(`Store ID: ${m[1]}`); return `https://www.printful.com/dashboard/stores/${m[1]}`; }
     }
-  } catch (_) {}
+  }
 
-  // Try: sidebar link matching "neurowyld" or the shopify domain
-  try {
-    const links = await page.locator('a[href*="/dashboard/stores/"]').all();
-    for (const link of links) {
-      const text = (await link.innerText().catch(() => '')).toLowerCase();
-      const href = await link.getAttribute('href').catch(() => '');
-      if (text.includes('neurowyld') || text.includes(storeSlug) || href.includes('shopify')) {
-        await link.click();
-        await page.waitForLoadState('networkidle');
-        log(`Navigated via store link: ${text}`);
-        break;
-      }
-    }
-  } catch (_) {}
+  // Only one store? Use it.
+  if (storeLinks.length === 1) {
+    const href = (await storeLinks[0].getAttribute('href').catch(() => '')) || '';
+    const m = href.match(/\/stores\/(\d+)/);
+    if (m) { log(`Store ID (only store): ${m[1]}`); return `https://www.printful.com/dashboard/stores/${m[1]}`; }
+  }
+
+  // Last resort: scrape store ID from page source
+  const html = await page.content();
+  const idMatch = html.match(/"storeId"\s*:\s*(\d+)/) || html.match(/\/stores\/(\d+)/);
+  if (idMatch) {
+    log(`Store ID from page source: ${idMatch[1]}`);
+    return `https://www.printful.com/dashboard/stores/${idMatch[1]}`;
+  }
 
   await shot(page, '05-store-navigated');
 
