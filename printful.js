@@ -434,26 +434,34 @@ async function handleFileLibraryModal(page, localPath) {
       log('"Save and close" clicked');
     }
   } else {
-    // Browser mode: click first thumbnail in "Recently used files" to SELECT/apply the file
-    // Anchor from the section heading — avoids dialog vs div selector issues
+    // Browser mode: click the "Apply" button that appears on recently-used file thumbnails
+    // data-testid="recentlyUsedFileApplyButton" overlays the img and intercepts pointer events
     try {
-      const recentSection = page.locator('text="Recently used files"').locator('..');
-      const firstImg = recentSection.locator('img').first();
-      if (await firstImg.isVisible({ timeout: 5000 }).catch(() => false)) {
-        await firstImg.click();
-        log('Clicked first file in Recently used files');
+      const applyBtn = page.locator('[data-testid="recentlyUsedFileApplyButton"]').first();
+      if (await applyBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
+        await applyBtn.click();
+        log('Clicked recentlyUsedFileApplyButton');
         await page.waitForTimeout(2000);
       } else {
-        log('No recently-used img found — clicking any visible img');
-        const anyImg = page.locator('img').filter({ hasNOT: page.locator('[class*="nav"], [class*="header"], [class*="logo"]') }).first();
-        if (await anyImg.isVisible({ timeout: 3000 }).catch(() => false)) {
-          await anyImg.click();
-          log('Clicked fallback img');
+        // Fallback: hover over first thumbnail to reveal Apply button, then click
+        const recentSection = page.locator('text="Recently used files"').locator('..');
+        const firstCard = recentSection.locator('img').first();
+        if (await firstCard.isVisible({ timeout: 3000 }).catch(() => false)) {
+          await firstCard.hover();
+          await page.waitForTimeout(300);
+          const hoveredApply = page.locator('[data-testid="recentlyUsedFileApplyButton"]').first();
+          if (await hoveredApply.isVisible({ timeout: 2000 }).catch(() => false)) {
+            await hoveredApply.click();
+            log('Clicked Apply button after hover');
+          } else {
+            await firstCard.click({ force: true });
+            log('Force-clicked thumbnail');
+          }
           await page.waitForTimeout(2000);
         }
       }
     } catch (e) {
-      log(`Thumbnail click error: ${e.message}`);
+      log(`Apply click error: ${e.message}`);
     }
 
     // If modal still open after thumbnail click, close it
