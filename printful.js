@@ -261,48 +261,11 @@ async function findStoreUrl(page) {
     return `https://www.printful.com/dashboard/stores/${storeIdFromState}`;
   }
 
-  // Vue Router links have no href attr — use ALL <a> elements plus role=link
-  const allLinks = await page.locator('a, [role="link"]').all();
-  log(`Total links on dashboard (including no-href): ${allLinks.length}`);
-  for (const link of allLinks) {
-    const href = (await link.getAttribute('href').catch(() => '')) || '';
-    const text = (await link.innerText().catch(() => '')).replace(/\s+/g, ' ').trim();
-    log(`  link: "${text}" → "${href}"`);
-  }
-
-  // Click Stores by exact text match — SPA handles the route change
-  const beforeUrl = page.url();
-  let storesClicked = false;
-  for (const link of allLinks) {
-    const text = (await link.innerText().catch(() => '')).replace(/\s+/g, ' ').trim().toLowerCase();
-    const href = (await link.getAttribute('href').catch(() => '')) || '';
-    if (text === 'stores' || href.toLowerCase().includes('/stores')) {
-      log(`Clicking: "${text}" → "${href}"`);
-      await link.click();
-      storesClicked = true;
-      break;
-    }
-  }
-
-  if (!storesClicked) {
-    log('No Stores link found in enumeration — trying getByText fallback');
-    try {
-      await page.getByText('Stores').first().click({ timeout: 5000 });
-      storesClicked = true;
-    } catch (e) {
-      log(`getByText Stores failed: ${e.message}`);
-    }
-  }
-
-  // Wait for SPA route change (URL will change, no page reload)
-  if (storesClicked) {
-    try {
-      await page.waitForURL(url => url !== beforeUrl, { timeout: 10_000 });
-    } catch (_) {
-      log('URL did not change after Stores click');
-    }
-    await page.waitForTimeout(2000);
-  }
+  // Stores section is at /dashboard/store (singular — confirmed from nav link dump)
+  await page.goto('https://www.printful.com/dashboard/store', {
+    waitUntil: 'domcontentloaded', timeout: STEP_MS
+  });
+  await page.waitForTimeout(3000);
 
   await shot(page, '05-stores-page');
   const storesPageUrl = page.url();
