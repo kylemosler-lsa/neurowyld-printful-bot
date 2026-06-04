@@ -304,24 +304,29 @@ async function findStoreUrl(page) {
 
 async function openAddProduct(page, storeUrl) {
   log('Navigating to Add Product...');
-  log(`Store URL: ${storeUrl}`);
-  // Try /products suffix first; if storeUrl already IS a products/store page, go there directly
-  const productsUrl = storeUrl.endsWith('/products')
-    ? storeUrl
-    : storeUrl.replace(/\/$/, '') + '/products';
-  await page.goto(productsUrl, { waitUntil: 'domcontentloaded', timeout: STEP_MS });
+  // "Add product" button lives on /dashboard/store (the stores list page)
+  await page.goto('https://www.printful.com/dashboard/store', {
+    waitUntil: 'domcontentloaded', timeout: STEP_MS
+  });
   await page.waitForTimeout(2000);
-  await shot(page, '06-products-page');
-  log(`Products page URL: ${page.url()}`);
+  await shot(page, '06-store-page');
+  log(`Store list URL: ${page.url()}`);
 
   const addBtn = page.getByRole('button', { name: /add product/i })
     .or(page.getByRole('link', { name: /add product/i }))
     .first();
 
+  const beforeUrl = page.url();
   await addBtn.click({ timeout: STEP_MS });
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(1500);
+  // SPA navigation — wait for URL to change
+  try {
+    await page.waitForURL(url => url.href !== beforeUrl, { timeout: 15_000 });
+  } catch (_) {
+    await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
+  }
+  await page.waitForTimeout(2000);
   await shot(page, '07-catalog-open');
+  log(`Product catalog URL: ${page.url()}`);
   log('Product catalog open');
 }
 
