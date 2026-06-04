@@ -108,33 +108,68 @@ async function isLoggedIn(page) {
   }
 }
 
+async function dismissCookieBanner(page) {
+  try {
+    const dialog = page.locator('dialog[data-id="cookiefirst-root"]');
+    const appeared = await dialog.isVisible({ timeout: 6000 }).catch(() => false);
+    if (!appeared) return;
+    log('Cookie banner detected, dismissing via JS...');
+
+    // JS click bypasses the backdrop's pointer-events interception
+    const clicked = await page.evaluate(() => {
+      const d = document.querySelector('dialog[data-id="cookiefirst-root"]');
+      if (!d) return false;
+      const btn = [...d.querySelectorAll('button')].find(b =>
+        /accept all|accept|allow all|allow|agree/i.test(b.textContent.trim())
+      );
+      if (btn) { btn.click(); return true; }
+      return false;
+    });
+
+    if (clicked) {
+      await dialog.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
+    }
+
+    // Nuclear fallback: remove from DOM
+    if (await dialog.isVisible({ timeout: 500 }).catch(() => false)) {
+      log('Banner still present, removing from DOM...');
+      await page.evaluate(() => {
+        document.querySelector('dialog[data-id="cookiefirst-root"]')?.remove();
+      });
+      await page.waitForTimeout(300);
+    }
+    log('Cookie banner dismissed');
+  } catch (e) {
+    log(`Cookie banner dismissal warning: ${e.message}`);
+  }
+}
+
 async function login(page, context) {
   log('Logging in to Printful...');
-  // Real login page — /login is a 404 as of 2026
   await page.goto('https://www.printful.com/auth/login', { waitUntil: 'domcontentloaded', timeout: STEP_MS });
   await page.waitForTimeout(2000);
   await shot(page, '01-login-page');
 
-  // Dismiss cookie consent banner if present
-  try {
-    const acceptAll = page.locator('button:has-text("Accept all")').first();
-    if (await acceptAll.isVisible({ timeout: 3000 })) {
-      await acceptAll.click();
-      log('Dismissed cookie banner');
-      await page.waitForTimeout(500);
-    }
-  } catch (_) {}
+  // Dismiss cookie banner before filling form
+  await dismissCookieBanner(page);
 
-  // Fill email using the known stable selectors for this page
+  // Fill email and password
   await page.locator('#login-email').waitFor({ state: 'visible', timeout: STEP_MS });
   await page.locator('#login-email').fill(process.env.PRINTFUL_EMAIL);
   await page.locator('#login-password').fill(process.env.PRINTFUL_PASSWORD);
   await shot(page, '02-login-filled');
 
-  // Submit — the submit control is input[type="submit"], not a button
-  await page.locator('input[type="submit"]').click();
+  // Dismiss again in case banner reappeared while filling
+  await dismissCookieBanner(page);
 
-  // Wait up to 45s for redirect to dashboard
+  // Submit — use force:true as fallback if any overlay still lingers
+  try {
+    await page.locator('input[type="submit"]').click({ timeout: 10_000 });
+  } catch (_) {
+    log('Normal submit click failed, trying force click...');
+    await page.locator('input[type="submit"]').click({ force: true });
+  }
+
   await page.waitForURL(/\/dashboard/, { timeout: 45_000 });
   await shot(page, '03-post-login');
   await saveSession(context);
