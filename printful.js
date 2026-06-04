@@ -412,10 +412,11 @@ async function handleFileLibraryModal(page, localPath) {
     }
   }
 
-  await page.waitForTimeout(2000);
+  // Give Printful time to process the upload and either show TOS or update the recently-used list.
+  await page.waitForTimeout(5000);
 
   // Detect modal mode: TOS confirmation vs plain file browser
-  const hasTOS = await page.getByText('I understand and accept').isVisible({ timeout: 1000 }).catch(() => false);
+  const hasTOS = await page.getByText('I understand and accept').isVisible({ timeout: 2000 }).catch(() => false);
   log(`File Library mode: ${hasTOS ? 'TOS-confirmation' : 'browser'}`);
 
   if (hasTOS) {
@@ -472,39 +473,60 @@ async function handleFileLibraryModal(page, localPath) {
       await page.waitForTimeout(2000);
     }
   } else {
-    // Apply button is inside a hover-to-reveal container (pf-d-none parent).
-    // Playwright force:true cannot click zero-bounding-box elements.
-    // JS element.click() on <a href="javascript:"> fires the click handler even when display:none.
-    const jsApplied = await page.evaluate(() => {
-      const btn = document.querySelector('[data-testid="recentlyUsedFileApplyButton"]');
-      if (!btn) return false;
-      btn.click();
-      return true;
-    }).catch(() => false);
+    // Apply button is display:none inside each file tile — it only appears via CSS :hover.
+    // Playwright hover() moves the actual mouse pointer, activating :hover and making the button visible.
+    // JS element.click() doesn't trigger CSS :hover, so the handler never sees a visible target.
+    await shot(page, 'file-library-browser');
 
-    if (jsApplied) {
-      log('Clicked Apply button (JS direct)');
-      await page.waitForTimeout(2000);
-    } else {
-      // Hover over file tile to reveal the button, then Playwright click
-      await page.locator('[data-testid="recentlyUsedFile"]').first()
-        .hover({ timeout: 2000 }).catch(() => {});
-      await page.waitForTimeout(300);
-      const allApply = await page.locator('[data-testid="recentlyUsedFileApplyButton"]').all();
-      log(`Found ${allApply.length} Apply button(s) after hover`);
-      for (const btn of allApply) {
-        try {
-          await btn.click({ timeout: 2000 });
-          log('Clicked Apply after hover');
-          await page.waitForTimeout(2000);
-          break;
-        } catch (_) {}
+    let applyWorked = false;
+
+    // Attempt 1: hover the first tile → Playwright click the now-visible Apply button
+    try {
+      const tile = page.locator('[data-testid="recentlyUsedFile"]').first();
+      await tile.hover({ timeout: 3000 });
+      log('Hovered over first file tile');
+      await page.waitForTimeout(400);
+
+      const applyBtn = page.locator('[data-testid="recentlyUsedFileApplyButton"]').first();
+      const visible = await applyBtn.isVisible({ timeout: 1000 }).catch(() => false);
+      log(`Apply button visible after hover: ${visible}`);
+
+      if (visible) {
+        await applyBtn.click({ timeout: 3000 });
+        log('Clicked Apply (hover → visible → click)');
+      } else {
+        // Hover didn't reveal it — force-click
+        await applyBtn.click({ force: true, timeout: 3000 });
+        log('Clicked Apply (hover → force click)');
       }
+      applyWorked = true;
+      await page.waitForTimeout(2000);
+    } catch (e) {
+      log(`Apply hover+click failed: ${e.message.split('\n')[0]}`);
     }
 
-    // If modal still open after thumbnail click, close it
+    // Attempt 2: reveal display:none parent via JS, then Playwright click
+    if (!applyWorked || await modal.isVisible({ timeout: 500 }).catch(() => false)) {
+      log('Trying parent-reveal + JS click...');
+      await page.evaluate(() => {
+        const btn = document.querySelector('[data-testid="recentlyUsedFileApplyButton"]');
+        if (!btn) return;
+        let el = btn;
+        while (el && el !== document.body) {
+          const cs = window.getComputedStyle(el);
+          if (cs.display === 'none') el.style.display = 'block';
+          if (cs.visibility === 'hidden') el.style.visibility = 'visible';
+          el = el.parentElement;
+        }
+        btn.click();
+      });
+      log('Apply clicked via parent-reveal');
+      await page.waitForTimeout(2000);
+    }
+
+    // If modal still open, close it (design was not placed — wizard Continue will be disabled)
     if (await modal.isVisible({ timeout: 1000 }).catch(() => false)) {
-      log('Modal still open — closing via X');
+      log('Modal still open after all Apply attempts — closing via X');
       const closeX = page.locator('button[aria-label*="lose"], button[title*="lose"]').first();
       if (await closeX.isVisible({ timeout: 2000 }).catch(() => false)) {
         await closeX.click();
@@ -512,6 +534,8 @@ async function handleFileLibraryModal(page, localPath) {
         await page.keyboard.press('Escape');
       }
       await page.waitForTimeout(1000);
+    } else {
+      log('Modal closed — design placed successfully');
     }
   }
 
