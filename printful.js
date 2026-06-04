@@ -570,14 +570,28 @@ async function createProduct({ title, blkUrl, whtUrl, activeColors }) {
     viewport: { width: 1440, height: 900 },
   });
 
-  // Nuke CookieFirst cookie banner on every page via MutationObserver injected before page scripts
+  // Inject CSS to permanently hide CookieFirst banner before any page scripts run.
+  // CSS rules apply the instant the element is inserted, regardless of reinsertion attempts.
   await context.addInitScript(() => {
-    const kill = () => {
-      document.querySelectorAll('[data-id="cookiefirst-root"], .cookiefirst-root, [data-testid="rootContainer"]')
-        .forEach(el => el.remove());
-    };
-    new MutationObserver(kill).observe(document.documentElement, { childList: true, subtree: true });
-    kill();
+    const STYLE = `
+      dialog[data-id="cookiefirst-root"],
+      [data-id="cookiefirst-root"],
+      .cookiefirst-root {
+        display: none !important;
+        pointer-events: none !important;
+        visibility: hidden !important;
+      }
+    `;
+    function injectStyle() {
+      const s = document.createElement('style');
+      s.id = 'kill-cookiefirst';
+      s.textContent = STYLE;
+      (document.head || document.documentElement).appendChild(s);
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', injectStyle, { once: true });
+    }
+    injectStyle(); // also inject immediately in case head already exists
   });
 
   const page = await context.newPage();
