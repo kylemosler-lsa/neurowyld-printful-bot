@@ -234,40 +234,56 @@ async function findStoreUrl(page) {
   await shot(page, '04-dashboard');
   log(`Dashboard URL: ${page.url()}`);
 
-  // Log ALL nav/sidebar links so we can see the real URL structure
+  // Dump ALL links on page for diagnosis
   const allLinks = await page.locator('a[href]').all();
+  log(`Total links on dashboard: ${allLinks.length}`);
   for (const link of allLinks) {
     const href = (await link.getAttribute('href').catch(() => '')) || '';
-    if (href.includes('store') || href.includes('Store') || href.includes('product')) {
-      const text = (await link.innerText().catch(() => '')).trim();
-      log(`  nav link: "${text}" → ${href}`);
+    const text = (await link.innerText().catch(() => '')).replace(/\s+/g, ' ').trim();
+    if (text || href) log(`  link: "${text}" → ${href}`);
+  }
+
+  // Find the Stores link by iterating all links and checking text/href
+  let clickedHref = null;
+  for (const link of allLinks) {
+    const href = (await link.getAttribute('href').catch(() => '')) || '';
+    const text = (await link.innerText().catch(() => '')).replace(/\s+/g, ' ').trim().toLowerCase();
+    if (text === 'stores' || href.toLowerCase().includes('/stores')) {
+      log(`Clicking Stores link: "${text}" → ${href}`);
+      clickedHref = href;
+      // Navigate directly to avoid SPA click issues
+      const fullUrl = href.startsWith('http') ? href : `https://www.printful.com${href}`;
+      await page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: STEP_MS });
+      await page.waitForTimeout(3000);
+      break;
     }
   }
 
-  // Click the "Stores" sidebar link — use whatever URL it actually points to
-  const storesNavLink = page.locator('a').filter({ hasText: /^stores$/i }).first();
-  if (await storesNavLink.isVisible({ timeout: 5000 }).catch(() => false)) {
-    const href = await storesNavLink.getAttribute('href').catch(() => null);
-    log(`Stores nav link href: ${href}`);
-    await storesNavLink.click();
-    await page.waitForLoadState('domcontentloaded');
-    await page.waitForTimeout(3000);
+  if (!clickedHref) {
+    // Last resort: try clicking by text
+    log('No stores link found by href — trying getByText');
+    try {
+      await page.getByText('Stores').first().click({ timeout: 5000 });
+      await page.waitForTimeout(3000);
+    } catch (e) {
+      log(`getByText Stores failed: ${e.message}`);
+    }
   }
 
   await shot(page, '05-stores-page');
   const storesPageUrl = page.url();
-  log(`URL after clicking Stores: ${storesPageUrl}`);
+  log(`URL after Stores navigation: ${storesPageUrl}`);
 
-  // If URL contains a store ID already, we're done
+  // If URL contains a store ID, we're done
   const redirectMatch = storesPageUrl.match(/\/stores\/(\d+)/);
   if (redirectMatch) {
     log(`Store ID from redirect: ${redirectMatch[1]}`);
     return `https://www.printful.com/dashboard/stores/${redirectMatch[1]}`;
   }
 
-  // Look for store-specific links with a numeric ID
+  // Look for store-specific links with a numeric ID on the current page
   const storeIdLinks = await page.locator('a[href*="/stores/"]').all();
-  log(`Found ${storeIdLinks.length} /stores/ links`);
+  log(`Found ${storeIdLinks.length} /stores/ links on stores page`);
   for (const link of storeIdLinks) {
     const href = (await link.getAttribute('href').catch(() => '')) || '';
     const text = (await link.innerText().catch(() => '')).trim();
@@ -276,9 +292,9 @@ async function findStoreUrl(page) {
     if (m) { log(`Store ID: ${m[1]}`); return `https://www.printful.com${href.replace(/\/products.*/, '')}`; }
   }
 
-  // If we navigated somewhere useful (has "store" or is a dashboard sub-page), use that URL
+  // If we're somewhere useful and not on a 404, use it as the store base
   if (storesPageUrl !== 'https://www.printful.com/dashboard' && !storesPageUrl.includes('404')) {
-    log(`Using current URL as store base: ${storesPageUrl}`);
+    log(`Using navigated URL as store base: ${storesPageUrl}`);
     return storesPageUrl;
   }
 
