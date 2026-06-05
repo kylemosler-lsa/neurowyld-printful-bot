@@ -473,58 +473,60 @@ async function handleFileLibraryModal(page, localPath) {
       await page.waitForTimeout(2000);
     }
   } else {
-    // Apply button is display:none inside each file tile — it only appears via CSS :hover.
-    // Playwright hover() moves the actual mouse pointer, activating :hover and making the button visible.
-    // JS element.click() doesn't trigger CSS :hover, so the handler never sees a visible target.
+    // Apply button is display:none — shown only via CSS :hover on the tile.
+    // JS .click() generates isTrusted:false — Printful ignores it.
+    // page.mouse.move() physically moves the pointer → CSS :hover activates → button becomes visible.
+    // Playwright .click() then generates isTrusted:true, which the handler accepts.
     await shot(page, 'file-library-browser');
 
-    let applyWorked = false;
+    // Walk up from the Apply button to find its tile's bounding box
+    const tileBB = await page.evaluate(() => {
+      const btn = document.querySelector('[data-testid="recentlyUsedFileApplyButton"]');
+      if (!btn) return null;
+      let el = btn.parentElement;
+      while (el && el !== document.body) {
+        const r = el.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0) {
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+        }
+        el = el.parentElement;
+      }
+      return null;
+    });
+    log(`Tile bounding box: ${tileBB ? `(${Math.round(tileBB.x)}, ${Math.round(tileBB.y)})` : 'not found'}`);
 
-    // Attempt 1: hover the first tile → Playwright click the now-visible Apply button
-    try {
-      const tile = page.locator('[data-testid="recentlyUsedFile"]').first();
-      await tile.hover({ timeout: 3000 });
-      log('Hovered over first file tile');
-      await page.waitForTimeout(400);
+    if (tileBB) {
+      await page.mouse.move(tileBB.x, tileBB.y);
+      await page.waitForTimeout(500);
 
       const applyBtn = page.locator('[data-testid="recentlyUsedFileApplyButton"]').first();
       const visible = await applyBtn.isVisible({ timeout: 1000 }).catch(() => false);
-      log(`Apply button visible after hover: ${visible}`);
+      log(`Apply button visible after mouse.move hover: ${visible}`);
+      await shot(page, 'file-library-after-hover');
 
-      if (visible) {
-        await applyBtn.click({ timeout: 3000 });
-        log('Clicked Apply (hover → visible → click)');
-      } else {
-        // Hover didn't reveal it — force-click
-        await applyBtn.click({ force: true, timeout: 3000 });
-        log('Clicked Apply (hover → force click)');
+      try {
+        await applyBtn.click({ force: !visible, timeout: 4000 });
+        log(`Clicked Apply (mouse.move → ${visible ? 'normal' : 'force'} click)`);
+        await page.waitForTimeout(2000);
+      } catch (e) {
+        log(`Apply click failed: ${e.message.split('\n')[0]}`);
       }
-      applyWorked = true;
-      await page.waitForTimeout(2000);
-    } catch (e) {
-      log(`Apply hover+click failed: ${e.message.split('\n')[0]}`);
     }
 
-    // Attempt 2: reveal display:none parent via JS, then Playwright click
-    if (!applyWorked || await modal.isVisible({ timeout: 500 }).catch(() => false)) {
-      log('Trying parent-reveal + JS click...');
-      await page.evaluate(() => {
-        const btn = document.querySelector('[data-testid="recentlyUsedFileApplyButton"]');
-        if (!btn) return;
-        let el = btn;
-        while (el && el !== document.body) {
-          const cs = window.getComputedStyle(el);
-          if (cs.display === 'none') el.style.display = 'block';
-          if (cs.visibility === 'hidden') el.style.visibility = 'visible';
-          el = el.parentElement;
-        }
-        btn.click();
-      });
-      log('Apply clicked via parent-reveal');
-      await page.waitForTimeout(2000);
+    // If still open, try clicking the first thumbnail image directly
+    if (await modal.isVisible({ timeout: 500 }).catch(() => false)) {
+      log('Trying thumbnail click fallback...');
+      try {
+        await page.locator('[role="dialog"] img, [class*="modal"] img, [class*="library"] img').first()
+          .click({ timeout: 3000 });
+        log('Clicked first thumbnail in modal');
+        await page.waitForTimeout(2000);
+      } catch (e) {
+        log(`Thumbnail click failed: ${e.message.split('\n')[0]}`);
+      }
     }
 
-    // If modal still open, close it (design was not placed — wizard Continue will be disabled)
+    // Final check
     if (await modal.isVisible({ timeout: 1000 }).catch(() => false)) {
       log('Modal still open after all Apply attempts — closing via X');
       const closeX = page.locator('button[aria-label*="lose"], button[title*="lose"]').first();

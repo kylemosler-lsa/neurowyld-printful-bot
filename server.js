@@ -56,7 +56,7 @@ app.get('/screenshots/latest', requireAuth, (_req, res) => {
   const files = fs.readdirSync(dir)
     .filter(f => f.endsWith('.png'))
     .sort()
-    .slice(-5)
+    .slice(-20)
     .map(f => {
       const data = fs.readFileSync(require('path').join(dir, f));
       return { name: f, base64: data.toString('base64') };
