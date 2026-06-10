@@ -605,31 +605,14 @@ async function selectColorSwatches(page, colorNames) {
         continue;
       }
 
-      // Swatches may be display:none until the panel fully renders.
-      // JS element.click() fires the click handler regardless of visibility.
-      const jsClicked = await page.evaluate((n) => {
-        const el =
-          document.querySelector(`[title*="${n} #"]`) ||
-          document.querySelector(`[aria-label="${n}"]`) ||
-          document.querySelector(`[data-color-name="${n}"]`);
-        if (!el) return false;
-        el.click();
-        return true;
-      }, name).catch(() => false);
-
-      if (jsClicked) {
-        await page.waitForTimeout(200);
-        log(`Clicked swatch: ${name} (JS)`);
-        continue;
-      }
-
-      // Playwright fallback for when swatch is actually visible
+      // Swatches are visible in the colour palette — use a real Playwright click.
+      // JS .click() generates isTrusted:false which Printful ignores.
       const swatch = page.locator(`[title*="${name} #"]`)
         .or(page.locator(`[aria-label="${name}"]`))
         .or(page.locator(`[data-color-name="${name}"]`))
         .first();
       await swatch.scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
-      await swatch.click({ force: true, timeout: 4000 });
+      await swatch.click({ timeout: 4000 });
       await page.waitForTimeout(200);
       log(`Clicked swatch: ${name}`);
     } catch (e) {
@@ -677,9 +660,23 @@ async function advanceThroughWizard(page, productTitle) {
   log(`Advancing through wizard to product details. Title: "${productTitle}"`);
   const continueBtn = () => page.getByRole('button', { name: /continue|next|proceed/i }).first();
 
-  // Click Continue up to 4 times — each click advances one wizard step
-  for (let step = 1; step <= 4; step++) {
+  // Click Continue up to 6 times — each click advances one wizard step.
+  // Do NOT use force:true — a disabled Continue button (no colours selected) would
+  // be clicked silently and the wizard would never advance.
+  for (let step = 1; step <= 6; step++) {
     await shot(page, `14-wizard-step-${step}`);
+
+    // Diagnostic: log what buttons are visible so we can trace the wizard state
+    try {
+      const btns = await page.locator('button:visible').all();
+      const lbls = [];
+      for (const b of btns) {
+        const t = await b.textContent().catch(() => '');
+        const en = await b.isEnabled().catch(() => '?');
+        if (t?.trim()) lbls.push(`"${t.trim()}"(en=${en})`);
+      }
+      log(`Wizard step ${step} buttons: ${lbls.slice(0, 15).join(', ')}`);
+    } catch (_) {}
 
     // Check if we're already on the details/name page
     const nameInput = page.getByLabel(/product name|name|title/i)
@@ -691,13 +688,21 @@ async function advanceThroughWizard(page, productTitle) {
       break;
     }
 
-    // Skip mockup selection if present — just continue with defaults
+    // Wait up to 5s for Continue to become enabled (colours must be selected first)
+    const enabled = await continueBtn().isEnabled({ timeout: 5000 }).catch(() => false);
+    log(`Continue button enabled: ${enabled}`);
+
+    if (!enabled) {
+      log(`Continue disabled at step ${step} — colours not selected or design not placed`);
+      break;
+    }
+
     try {
-      await continueBtn().click({ force: true, timeout: 8000 });
+      await continueBtn().click({ timeout: 8000 }); // no force — must be genuinely enabled
       await page.waitForLoadState('networkidle');
       await page.waitForTimeout(1500);
-    } catch (_) {
-      log(`No Continue button at step ${step} — stopping advance`);
+    } catch (e) {
+      log(`Continue click failed at step ${step}: ${e.message.split('\n')[0]}`);
       break;
     }
   }
@@ -733,9 +738,11 @@ async function submitToStore(page) {
   } catch (_) {}
 
   const submitBtn = page.getByRole('button', {
-    name: /submit.*store|sync.*store|add.*store|publish|save.*sync|save product/i
+    name: /submit.*store|sync.*store|add.*store|publish|save.*sync|save product|create product|add.*shopify|save.*shopify|save.*store/i
   })
-    .or(page.locator('button').filter({ hasText: /submit.*store|sync.*store|add.*store|publish/i }))
+    .or(page.locator('button').filter({
+      hasText: /submit.*store|sync.*store|add.*store|publish|save product|create product|add.*shopify/i
+    }))
     .first();
 
   await submitBtn.click({ force: true, timeout: STEP_MS });
